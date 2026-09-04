@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0b4f3c">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Aapoorti">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="format-detection" content="telephone=no">
+  <title>{{ title or "Aapoorti Partner" }}</title>
+  <link rel="manifest" href="/static/manifest.webmanifest">
+  <link rel="icon" href="/static/app-icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/static/app-icon.svg">
+  <link rel="stylesheet" href="/static/style.css?v=11">
+</head>
+<body class="app-shell role-{{ user.role|lower if user else 'guest' }}">
+  {% include "_loader.html" %}
+  <header class="topbar">
+    <a class="brand" href="/"><span class="brand-mark">A</span><span>Aapoorti <small>PARTNER APP</small></span></a>
+    <div class="top-actions">
+      <button class="install-app" type="button" hidden>Install app</button>
+      <span class="live-dot"></span>{% if franchise is defined %}<span class="workspace-identity"><b>{{ franchise.shop_name }}</b><small>Franchise</small></span>{% else %}<span class="role-label">{{ user.role|replace('_',' ')|title if user else 'Partner' }}</span>{% endif %}
+      <a class="logout" href="/logout" aria-label="Sign out" title="Sign out"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 17l5-5-5-5M15 12H3M14 3h4a3 3 0 013 3v12a3 3 0 01-3 3h-4"/></svg></a>
+    </div>
+  </header>
+  <main class="container {% block mode_class %}{% endblock %}">{% block content %}{% endblock %}</main>
+  <div class="offline-pill" role="status" hidden>Offline mode</div>
+  <script src="/static/app-shell.js?v=11" defer></script>
+</body>
+</html>

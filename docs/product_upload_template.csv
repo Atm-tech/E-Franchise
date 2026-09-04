@@ -1,0 +1,4 @@
+sku_code,product_name,department,brand,image_url,attributes_json,unit_weight,weight_unit,pack_multiplier,mrp,rsp,commission_mode,commission_type,commission_value,status
+SKU-0001,Toor Dal 1kg,Grocery,SampleBrand,https://example.com/images/toor-dal-1kg.jpg,"{""pack_size"":""1kg"",""unit"":""packet""}",1,KG,1,180,165,PRODUCT,PERCENT,4,ACTIVE
+SKU-0002,Basmati Rice 5kg,Grocery,SampleBrand,https://example.com/images/basmati-rice-5kg.jpg,"{""pack_size"":""5kg"",""unit"":""bag""}",5,KG,1,750,699,DEPARTMENT,,,ACTIVE
+SKU-0003,Noodle Combo Pack,Grocery,SampleBrand,https://example.com/images/noodle-combo-pack.jpg,"{""pack_size"":""70g"",""unit"":""pack of 5""}",70,G,5,150,135,PRODUCT,PERCENT,3,ACTIVE

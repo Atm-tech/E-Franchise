@@ -1,0 +1,14 @@
+{
+  "name": "Aapoorti Partner",
+  "short_name": "Aapoorti",
+  "description": "Aapoorti assisted commerce partner app",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
+  "orientation": "any",
+  "background_color": "#f5f4ed",
+  "theme_color": "#0b4f3c",
+  "categories": ["business", "shopping", "productivity"],
+  "icons": [{"src": "/static/app-icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable"}]
+}

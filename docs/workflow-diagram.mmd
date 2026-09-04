@@ -1,0 +1,21 @@
+flowchart LR
+    A[Admin Configuration<br/>Onboarding / Products / Commission / Deals] --> B[Franchisee App<br/>Order + Fulfillment Choice]
+    B --> C[Outlet POS (Multi User)<br/>Floor Scan + Bill + Individual Packing]
+    C --> D[Delivery Guard<br/>Receives Bill or Docket + Captures Weight]
+
+    D --> E[Option A: Franchise Pickup]
+    D --> F[Option B: Delivery Man]
+
+    E --> G[Franchise Collects<br/>OTP Confirmation]
+    F --> H[Delivery Man Pickup From Guard]
+    H --> I[Delivered To Franchise<br/>POD Confirmation]
+
+    C --> J[Multi-Bill Logic]
+    J --> K[Each Bill Packed Individually]
+    K --> L[Bundle Under Single Docket]
+    L --> D
+    D --> M{Weight Within Tolerance?}
+    M -->|Yes| E
+    M -->|Yes| F
+    M -->|No| N[Alert: Recheck Qty/Items]
+    N --> C
