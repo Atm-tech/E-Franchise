@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: aapoorti-e-franchise-api
+    runtime: docker
+    plan: 0.5c-512mb
+    region: singapore
+    branch: main
+    autoDeployTrigger: commit
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /ready
+    disk:
+      name: aapoorti-data
+      mountPath: /app/data
+      sizeGB: 1
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: E_FRANCHISE_DATA_DIR
+        value: /app/data
+      - key: SEED_DEMO
+        value: "0"
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: BOOTSTRAP_ADMIN_LOGIN
+        value: admin
+      - key: BOOTSTRAP_ADMIN_PASSWORD
+        generateValue: true
