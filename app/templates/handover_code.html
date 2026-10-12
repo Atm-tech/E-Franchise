@@ -1,0 +1,2 @@
+{% extends "base.html" %}
+{% block content %}<section class="card ops-panel account-panel"><p class="eyebrow">RECEIVER CONFIRMATION</p><h1>Your handover code</h1>{% if code %}<strong class="handover-code" data-handover-code>{{ code }}</strong>{% else %}<p>Code sent by SMS.</p>{% endif %}<p>{{ purpose }} · Expires at {{ expiry }} IST.</p><p>Share this code only after receiving and checking your goods. This code works once.</p><a href="/franchise/home">Back to partner app</a></section>{% endblock %}

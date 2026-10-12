@@ -1,0 +1,23 @@
+{
+  "framework": null,
+  "rewrites": [
+    {
+      "destination": "https://markers-seasons-hub-inspection.trycloudflare.com/:path*",
+      "source": "/:path*"
+    }
+  ],
+  "buildCommand": null,
+  "headers": [
+    {
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-store"
+        }
+      ],
+      "source": "/:path*"
+    }
+  ],
+  "outputDirectory": "public",
+  "$schema": "https://openapi.vercel.sh/vercel.json"
+}

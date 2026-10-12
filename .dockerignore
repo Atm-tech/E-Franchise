@@ -1,0 +1,11 @@
+.git
+mobile
+tmp
+.env*
+data
+*.log
+__pycache__
+tests
+docs
+.venv
+node_modules

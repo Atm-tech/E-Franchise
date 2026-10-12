@@ -1,0 +1,30 @@
+{
+  "name": "aapoorti-partner-mobile",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "configure": "node configure.mjs",
+    "bundle:tracking": "esbuild background-geolocation-entry.js --bundle --platform=browser --format=iife --outfile=../app/static/vendor/background-geolocation.js",
+    "sync": "node configure.mjs && npm run bundle:tracking && cap sync",
+    "android": "cap open android",
+    "ios": "cap open ios"
+  },
+  "dependencies": {
+    "@capacitor/android": "8.5.3",
+    "@capacitor/core": "8.5.3",
+    "@capacitor/ios": "8.5.3",
+    "@capacitor/local-notifications": "^8.3.1",
+    "@capgo/background-geolocation": "^8.4.11",
+    "esbuild": "^0.28.2",
+    "leaflet": "^1.9.4"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "8.5.3",
+    "@zxing/browser": "^0.2.1"
+  },
+  "overrides": {
+    "xcode": {
+      "uuid": "11.1.1"
+    }
+  }
+}

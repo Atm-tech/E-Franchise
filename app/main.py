@@ -1,7 +1,10 @@
 import csv
+from contextlib import closing
 import io
 import json
 import math
+import secrets
+import time
 import os
 import re
 import sqlite3
@@ -19,11 +22,15 @@ from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Resp
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
+from fastapi import HTTPException
+from app.security import RequestProtection, hash_password, verify_password, session_secret
+from app import operations, dispatch_rules
+from app.projections import monthly_projection
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-DATA_DIR = BASE_DIR / "data"
-DB_PATH = DATA_DIR / "e_franchise.db"
+DATA_DIR = Path(os.getenv("E_FRANCHISE_DATA_DIR", str(BASE_DIR / "data")))
+DB_PATH = Path(os.getenv("E_FRANCHISE_DB", str(DATA_DIR / "e_franchise.db")))
 MAX_PRODUCT_IMAGE_BYTES = 5 * 1024 * 1024
 PRODUCT_IMAGE_SIGNATURES = {
     "image/jpeg": (".jpg", lambda data: data.startswith(b"\xff\xd8\xff")),
@@ -34,9 +41,11 @@ PRODUCT_IMAGE_SIGNATURES = {
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(title="E-Franchise MVP")
-app.add_middleware(SessionMiddleware, secret_key="e-franchise-dev-secret")
+app.add_middleware(RequestProtection)
+app.add_middleware(SessionMiddleware, secret_key=session_secret(DATA_DIR), https_only=os.getenv("APP_ENV") == "production", same_site="lax", max_age=28800)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "app" / "static")), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "app" / "templates"))
+templates.env.globals["now_epoch"] = time.time
 IST = ZoneInfo("Asia/Kolkata")
 
 
@@ -64,8 +73,16 @@ def monthly_period(reference: datetime | None = None) -> tuple[str, str, str]:
 
 
 def get_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
+    class ClosingConnection(sqlite3.Connection):
+        def __exit__(self, *args):
+            try:
+                return super().__exit__(*args)
+            finally:
+                self.close()
+    conn = sqlite3.connect(DB_PATH, timeout=15, factory=ClosingConnection)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=15000")
+    conn.execute("BEGIN IMMEDIATE")
     return conn
 
 
@@ -105,6 +122,8 @@ def wallet_entry(
     franchise = cur.execute("SELECT wallet_balance FROM franchisees WHERE id=?", (franchisee_id,)).fetchone()
     if not franchise:
         raise ValueError("Franchisee not found")
+    if not math.isfinite(amount):
+        raise ValueError("Amount must be finite")
     balance = round(float(franchise["wallet_balance"]) + float(amount), 2)
     if balance < 0:
         raise ValueError("Wallet balance cannot become negative")
@@ -135,6 +154,8 @@ def earnings_wallet_entry(
         (franchisee_id, now_str()),
     )
     wallet = cur.execute("SELECT balance FROM earnings_wallets WHERE franchisee_id=?", (franchisee_id,)).fetchone()
+    if not math.isfinite(amount):
+        raise ValueError("Amount must be finite")
     balance = round(float(wallet["balance"]) + float(amount), 2)
     if balance < 0:
         raise ValueError("Earnings wallet balance cannot become negative")
@@ -159,31 +180,31 @@ def add_order_event(cur: sqlite3.Cursor, order_id: int, status: str, notes: str,
 
 def resolve_commission(cur: sqlite3.Cursor, product: sqlite3.Row, line_total: float) -> float:
     rule = cur.execute(
-        "SELECT * FROM commission_rules WHERE status='ACTIVE' AND product_id=? ORDER BY id DESC LIMIT 1",
-        (product["id"],),
+        "SELECT * FROM commission_rules WHERE status='ACTIVE' AND product_id=? AND (starts_on IS NULL OR starts_on='' OR starts_on<=?) AND (ends_on IS NULL OR ends_on='' OR ends_on>=?) ORDER BY id DESC LIMIT 1",
+        (product["id"], now_str()[:10], now_str()[:10]),
     ).fetchone()
     if not rule:
         rule = cur.execute(
-            "SELECT * FROM commission_rules WHERE status='ACTIVE' AND scope='DEPARTMENT' AND lower(department)=lower(?) ORDER BY id DESC LIMIT 1",
-            (product["department"],),
+            "SELECT * FROM commission_rules WHERE status='ACTIVE' AND scope='DEPARTMENT' AND lower(department)=lower(?) AND (starts_on IS NULL OR starts_on='' OR starts_on<=?) AND (ends_on IS NULL OR ends_on='' OR ends_on>=?) ORDER BY id DESC LIMIT 1",
+            (product["department"], now_str()[:10], now_str()[:10]),
         ).fetchone()
     if rule:
         value = float(rule["commission_value"])
-        return value if rule["commission_type"] == "FIXED" else line_total * value / 100.0
+        return min(line_total, value if rule["commission_type"] == "FIXED" else line_total * value / 100.0)
     return line_total * float(product["commission_value"]) / 100.0
 
 
-def resolve_deal(cur: sqlite3.Cursor, product: sqlite3.Row, unit_price: float) -> tuple[float, str]:
+def resolve_deal(cur: sqlite3.Cursor, product: sqlite3.Row, unit_price: float, franchisee_id: int | None = None) -> tuple[float, str]:
     today = now_str()[:10]
-    date_filter = "status='ACTIVE' AND (starts_on IS NULL OR starts_on='' OR starts_on<=?) AND (ends_on IS NULL OR ends_on='' OR ends_on>=?)"
+    date_filter = "(franchisee_id IS NULL OR franchisee_id=?) AND status='ACTIVE' AND (starts_on IS NULL OR starts_on='' OR starts_on<=?) AND (ends_on IS NULL OR ends_on='' OR ends_on>=?)"
     deal = cur.execute(
-        f"SELECT * FROM promotions WHERE {date_filter} AND scope='PRODUCT' AND product_id=? ORDER BY id DESC LIMIT 1",
-        (today, today, product["id"]),
+        f"SELECT * FROM promotions WHERE {date_filter} AND scope='PRODUCT' AND product_id=? ORDER BY (franchisee_id IS NOT NULL) DESC,id DESC LIMIT 1",
+        (franchisee_id, today, today, product["id"]),
     ).fetchone()
     if not deal:
         deal = cur.execute(
-            f"SELECT * FROM promotions WHERE {date_filter} AND scope='DEPARTMENT' AND lower(department)=lower(?) ORDER BY id DESC LIMIT 1",
-            (today, today, product["department"]),
+            f"SELECT * FROM promotions WHERE {date_filter} AND scope='DEPARTMENT' AND lower(department)=lower(?) ORDER BY (franchisee_id IS NOT NULL) DESC,id DESC LIMIT 1",
+            (franchisee_id, today, today, product["department"]),
         ).fetchone()
     if not deal:
         return unit_price, ""
@@ -199,9 +220,15 @@ def target_sales_amount(
     period_start: str,
     period_end: str,
 ) -> float:
-    sales_time = "COALESCE(NULLIF(o.executed_at,''), o.created_at)"
-    filters = f"o.franchisee_id=? AND {sales_time}>=? AND {sales_time}<? AND o.status NOT IN ('ON_HOLD','CANCELLED')"
+    sales_time = "COALESCE(NULLIF(o.updated_at,''), o.created_at)"
+    filters = f"o.franchisee_id=? AND {sales_time}>=? AND {sales_time}<? AND o.status='DELIVERED'"
     params: list[Any] = [franchisee_id, period_start, period_end]
+    if program["starts_on"]:
+        filters += f" AND substr({sales_time},1,10)>=?"
+        params.append(program["starts_on"])
+    if program["ends_on"]:
+        filters += f" AND substr({sales_time},1,10)<=?"
+        params.append(program["ends_on"])
     if program["scope"] == "TOTAL_SALE":
         row = cur.execute(
             f"""SELECT COALESCE(SUM(oi.line_total),0) total
@@ -364,7 +391,21 @@ def earning_guide(
         {"threshold": float(slab["threshold_amount"]), "rate": float(slab["reward_percent"])}
         for target in targets for slab in target.get("slabs", []) if target["scope"] == "TOTAL_SALE"
     ]
+    delivered = cur.execute(
+        """SELECT COALESCE(SUM(item_subtotal),0) sales,
+                  COALESCE(SUM(commission_total),0) commission
+           FROM orders WHERE franchisee_id=? AND status='DELIVERED'
+             AND COALESCE(NULLIF(updated_at,''),created_at)>=?
+             AND COALESCE(NULLIF(updated_at,''),created_at)<?""",
+        (franchisee_id, period_start, period_end),
+    ).fetchone()
+    projection_targets = [target for target in targets
+                          if target['period_type'] == 'MONTHLY'
+                          and (not target['starts_on'] or target['starts_on'] <= current.date().isoformat())
+                          and (not target['ends_on'] or target['ends_on'] >= current.date().isoformat())]
+    projection = monthly_projection(float(delivered['sales']), float(delivered['commission']), projection_targets, current)
     return {
+        "projection": projection,
         "period_label": period_label,
         "sales": eligible_sales,
         "gross_sales": sales,
@@ -441,7 +482,10 @@ def franchise_summary(cur: sqlite3.Cursor, franchisee_id: int, start: str, end: 
     ).fetchone()
     tax_rows = cur.execute(
         """SELECT oi.gst_rate, ROUND(SUM(oi.taxable_value),2) taxable, ROUND(SUM(oi.gst_amount),2) tax,
-                  ROUND(SUM(oi.line_total),2) gross
+                  ROUND(SUM(oi.line_total),2) gross,
+                  ROUND(SUM(CASE WHEN o.supply_state_code=o.supplier_state_code THEN ROUND(oi.gst_amount/2,2) ELSE 0 END),2) cgst,
+                  ROUND(SUM(CASE WHEN o.supply_state_code=o.supplier_state_code THEN oi.gst_amount-ROUND(oi.gst_amount/2,2) ELSE 0 END),2) sgst,
+                  ROUND(SUM(CASE WHEN o.supply_state_code!=o.supplier_state_code THEN oi.gst_amount ELSE 0 END),2) igst
            FROM order_items oi JOIN orders o ON o.id=oi.order_id
            WHERE o.franchisee_id=? AND COALESCE(NULLIF(o.executed_at,''),o.created_at)>=?
              AND COALESCE(NULLIF(o.executed_at,''),o.created_at)<? AND o.status NOT IN ('ON_HOLD','CANCELLED')
@@ -465,7 +509,7 @@ def franchise_summary(cur: sqlite3.Cursor, franchisee_id: int, start: str, end: 
     }
 
 
-def invoice_tax_breakdown(items: list[dict[str, Any]], delivery_charge: float = 0) -> list[dict[str, float]]:
+def invoice_tax_breakdown(items: list[dict[str, Any]], delivery_charge: float = 0, interstate: bool = False) -> list[dict[str, float]]:
     grouped: dict[float, dict[str, float]] = {}
     for item in items:
         rate = float(item["gst_rate"] or 0)
@@ -484,7 +528,7 @@ def invoice_tax_breakdown(items: list[dict[str, Any]], delivery_charge: float = 
     for rate in sorted(grouped):
         bucket = grouped[rate]
         result.append({key: round(value, 2) for key, value in bucket.items()} | {
-            "cgst": round(bucket["gst"] / 2, 2), "sgst": round(bucket["gst"] - round(bucket["gst"] / 2, 2), 2),
+            "cgst": 0 if interstate else round(bucket["gst"] / 2, 2), "sgst": 0 if interstate else round(bucket["gst"] - round(bucket["gst"] / 2, 2), 2), "igst": round(bucket["gst"], 2) if interstate else 0,
         })
     return result
 
@@ -501,9 +545,18 @@ def order_ids_for_entity(cur: sqlite3.Cursor, entity_type: str, entity_id: int) 
 
 
 def complete_entity_orders(cur: sqlite3.Cursor, entity_type: str, entity_id: int, user_id: int | None) -> None:
+    table = "bills" if entity_type == "BILL" else "dockets"
+    cur.execute(f"UPDATE {table} SET status='DELIVERED', updated_at=? WHERE id=?", (now_str(), entity_id))
+    if entity_type == "DOCKET":
+        cur.execute(
+            "UPDATE bills SET status='DELIVERED', updated_at=? WHERE id IN (SELECT bill_id FROM docket_bills WHERE docket_id=?)",
+            (now_str(), entity_id),
+        )
     for order_id in order_ids_for_entity(cur, entity_type, entity_id):
         cur.execute("UPDATE orders SET status='DELIVERED', updated_at=? WHERE id=?", (now_str(), order_id))
         add_order_event(cur, order_id, "DELIVERED", "Fulfilment completed", user_id)
+        fid = cur.execute("SELECT franchisee_id FROM orders WHERE id=?", (order_id,)).fetchone()[0]
+        refresh_target_progress(cur, fid, user_id)
 
 
 def read_env_file(path: Path) -> dict[str, str]:
@@ -1068,238 +1121,271 @@ def init_db() -> None:
             "remarks": "TEXT",
         })
 
-        # Seed settings
-        upsert_setting(cur, "wallet_credit_percent", "75")
-        upsert_setting(cur, "instant_premium_charge", "40")
-        upsert_setting(cur, "day_delivery_charge", "10")
-        upsert_setting(cur, "weight_tolerance_kg", "0.30")
-        upsert_setting(cur, "weight_alert_is_blocking", "0")
-        upsert_setting(cur, "delivery_per_km", "8")
-        upsert_setting(cur, "free_delivery_threshold", "999")
-        upsert_setting(cur, "free_delivery_limit_per_day", "3")
-        upsert_setting(cur, "low_wallet_threshold", "1000")
-        upsert_setting(cur, "delivery_charge_bearer", "CUSTOMER")
-        upsert_setting(cur, "bank_api_enabled", "0")
-        upsert_setting(cur, "bank_api_provider", "")
-        upsert_setting(cur, "otp_enabled", "0")
-        upsert_setting(cur, "otp_provider", "")
-        upsert_setting(cur, "test_wallet_topup_enabled", "1")
-        upsert_setting(cur, "business_legal_name", "Aapoorti Shopping Mall Ltd")
-        upsert_setting(cur, "business_gstin", "")
-        upsert_setting(cur, "business_address", "Market Road, Sector 12, Bhopal, Madhya Pradesh")
-        upsert_setting(cur, "business_state_code", "23")
+        operations.migrate(cur)
+        dispatch_rules.migrate(cur)
 
-        if cur.execute("SELECT COUNT(1) c FROM outlets").fetchone()["c"] == 0:
-            cur.executemany(
-                "INSERT INTO outlets (name, code, address, area, phone) VALUES (?, ?, ?, ?, ?)",
-                [
-                    ("Aapoorti Central Hub", "OUT-01", "Market Road, Sector 12", "Sector 12", "1800-120-120"),
-                    ("Aapoorti North Point", "OUT-02", "High Street, Civil Lines", "Civil Lines", "1800-120-121"),
-                    ("Aapoorti East Express", "OUT-03", "Station Road, East Gate", "East Gate", "1800-120-122"),
-                ],
-            )
+        # Seed defaults without overwriting saved configuration.
+        cur.execute("INSERT OR IGNORE INTO settings (key,value) VALUES (?,?)", ("wallet_credit_percent", "75"))
+        cur.execute("INSERT OR IGNORE INTO settings (key,value) VALUES (?,?)", ("instant_premium_charge", "40"))
+        cur.execute("INSERT OR IGNORE INTO settings (key,value) VALUES (?,?)", ("day_delivery_charge", "10"))
+        cur.execute("INSERT OR IGNORE INTO settings (key,value) VALUES (?,?)", ("weight_tolerance_kg", "0.30"))
+        cur.execute("INSERT OR IGNORE INTO settings (key,value) VALUES (?,?)", ("weight_alert_is_blocking", "0"))
+        cur.execute("INSERT OR IGNORE INTO settings (key,value) VALUES (?,?)", ("delivery_per_km", "8"))
+        cur.execute("INSERT OR IGNORE INTO settings (key,value) VALUES (?,?)", ("free_delivery_threshold", "999"))
+        cur.execute("INSERT OR IGNORE INTO settings (key,value) VALUES (?,?)", ("free_delivery_limit_per_day", "3"))
+        cur.execute("INSERT OR IGNORE INTO settings (key,value) VALUES (?,?)", ("low_wallet_threshold", "1000"))
+        cur.execute("INSERT OR IGNORE INTO settings (key,value) VALUES (?,?)", ("delivery_charge_bearer", "CUSTOMER"))
+        cur.execute("INSERT OR IGNORE INTO settings (key,value) VALUES (?,?)", ("bank_api_enabled", "0"))
+        cur.execute("INSERT OR IGNORE INTO settings (key,value) VALUES (?,?)", ("bank_api_provider", ""))
+        cur.execute("INSERT OR IGNORE INTO settings (key,value) VALUES (?,?)", ("otp_enabled", "0"))
+        cur.execute("INSERT OR IGNORE INTO settings (key,value) VALUES (?,?)", ("otp_provider", ""))
+        cur.execute("INSERT OR IGNORE INTO settings (key,value) VALUES (?,?)", ("test_wallet_topup_enabled", "1"))
+        cur.execute("INSERT OR IGNORE INTO settings (key,value) VALUES (?,?)", ("business_legal_name", "Aapoorti Shopping Mall Ltd"))
+        cur.execute("INSERT OR IGNORE INTO settings (key,value) VALUES (?,?)", ("business_gstin", ""))
+        cur.execute("INSERT OR IGNORE INTO settings (key,value) VALUES (?,?)", ("business_address", "Market Road, Sector 12, Bhopal, Madhya Pradesh"))
+        cur.execute("INSERT OR IGNORE INTO settings (key,value) VALUES (?,?)", ("business_state_code", "23"))
 
-        franchisee_count = cur.execute("SELECT COUNT(1) as c FROM franchisees").fetchone()["c"]
-        if franchisee_count == 0:
-            cur.execute(
-                """
-                INSERT INTO franchisees (name, mobile, shop_name, address, area, wallet_balance, status)
-                VALUES (?, ?, ?, ?, ?, ?, 'ACTIVE')
-                """,
-                ("Ravi Traders", "9000000002", "Ravi Mart", "Sector 12, Market Road", "Sector 12", 5000.0),
-            )
+        # Seed demo content only for a fresh development database.
+        if os.getenv("SEED_DEMO", "0" if os.getenv("APP_ENV") == "production" else "1") == "1" and cur.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0:
+            if cur.execute("SELECT COUNT(1) c FROM outlets").fetchone()["c"] == 0:
+                cur.executemany(
+                    "INSERT INTO outlets (name, code, address, area, phone) VALUES (?, ?, ?, ?, ?)",
+                    [
+                        ("Aapoorti Central Hub", "OUT-01", "Market Road, Sector 12", "Sector 12", "1800-120-120"),
+                        ("Aapoorti North Point", "OUT-02", "High Street, Civil Lines", "Civil Lines", "1800-120-121"),
+                        ("Aapoorti East Express", "OUT-03", "Station Road, East Gate", "East Gate", "1800-120-122"),
+                    ],
+                )
 
-        def ensure_role_user(
-            role: str,
-            username: str,
-            password: str,
-            display_name: str,
-            franchisee_id: int | None = None,
-        ) -> None:
-            row = cur.execute("SELECT id FROM users WHERE role=? ORDER BY id ASC LIMIT 1", (role,)).fetchone()
-            if row:
+            franchisee_count = cur.execute("SELECT COUNT(1) as c FROM franchisees").fetchone()["c"]
+            if franchisee_count == 0:
                 cur.execute(
                     """
-                    UPDATE users
-                    SET name=?, phone=?, pin=?, outlet_id=1, franchisee_id=?
-                    WHERE id=?
+                    INSERT INTO franchisees (name, mobile, shop_name, address, area, wallet_balance, status)
+                    VALUES (?, ?, ?, ?, ?, ?, 'ACTIVE')
                     """,
-                    (display_name, username, password, franchisee_id, row["id"]),
+                    ("Ravi Traders", "9000000002", "Ravi Mart", "Sector 12, Market Road", "Sector 12", 5000.0),
                 )
-            else:
-                cur.execute(
+
+            def ensure_role_user(
+                role: str,
+                username: str,
+                password: str,
+                display_name: str,
+                franchisee_id: int | None = None,
+            ) -> None:
+                row = cur.execute("SELECT id FROM users WHERE role=? ORDER BY id ASC LIMIT 1", (role,)).fetchone()
+                if row:
+                    return
+                else:
+                    cur.execute(
+                        """
+                        INSERT INTO users (name, role, phone, pin, outlet_id, franchisee_id)
+                        VALUES (?, ?, ?, ?, 1, ?)
+                        """,
+                        (display_name, role, username, hash_password(password), franchisee_id),
+                    )
+
+            default_franchise = cur.execute("SELECT id FROM franchisees ORDER BY id ASC LIMIT 1").fetchone()
+            default_franchise_id = default_franchise["id"] if default_franchise else None
+
+            # Demo identities are created once; saved credentials are never reset.
+            ensure_role_user("ADMIN", "adm", "adm@123", "Admin User")
+            ensure_role_user("FRANCHISEE", "frn", "frn@123", "Franchise User", default_franchise_id)
+            ensure_role_user("POS", "pos", "pos@123", "POS User")
+            ensure_role_user("GUARD", "grd", "grd@123", "Guard User")
+            ensure_role_user("DELIVERY", "dlv", "dlv@123", "Delivery User")
+
+            for account in cur.execute("SELECT id,pin FROM users").fetchall():
+                if not account["pin"].startswith("pbkdf2_sha256$"):
+                    cur.execute("UPDATE users SET pin=? WHERE id=?", (hash_password(account["pin"]), account["id"]))
+
+            for row in cur.execute("SELECT id, wallet_balance FROM franchisees WHERE wallet_balance != 0").fetchall():
+                exists = cur.execute("SELECT 1 FROM wallet_ledger WHERE franchisee_id=? LIMIT 1", (row["id"],)).fetchone()
+                if not exists:
+                    cur.execute(
+                        "INSERT INTO wallet_ledger (franchisee_id, entry_type, amount, balance_after, reference_type, remarks, created_at) VALUES (?, 'OPENING_BALANCE', ?, ?, 'MIGRATION', 'Opening wallet balance', ?)",
+                        (row["id"], row["wallet_balance"], row["wallet_balance"], now_str()),
+                    )
+
+            product_count = cur.execute("SELECT COUNT(1) as c FROM products").fetchone()["c"]
+            if product_count == 0:
+                cur.executemany(
                     """
-                    INSERT INTO users (name, role, phone, pin, outlet_id, franchisee_id)
-                    VALUES (?, ?, ?, ?, 1, ?)
+                    INSERT INTO products (sku_code, product_name, department, mrp, rsp, unit_weight, weight_unit, pack_multiplier, commission_mode, commission_value, status)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')
                     """,
-                    (display_name, role, username, password, franchisee_id),
+                    [
+                        ("SKU-001", "Toor Dal 1kg", "Grocery", 180, 165, 1.0, "KG", 1, "PRODUCT", 4),
+                        ("SKU-002", "Rice 5kg", "Grocery", 750, 699, 5.0, "KG", 1, "DEPARTMENT", 3),
+                        ("SKU-003", "Noodle Pack of 5", "Snacks", 150, 135, 0.07, "KG", 5, "PRODUCT", 2),
+                    ],
                 )
+            # Remove the earlier broad demo catalogue; the product master is intentionally curated.
+            cur.execute("DELETE FROM products WHERE sku_code LIKE 'SKU-%'")
 
-        default_franchise = cur.execute("SELECT id FROM franchisees ORDER BY id ASC LIMIT 1").fetchone()
-        default_franchise_id = default_franchise["id"] if default_franchise else None
-
-        # Reset role credentials each startup for predictable demo access.
-        ensure_role_user("ADMIN", "adm", "adm@123", "Admin User")
-        ensure_role_user("FRANCHISEE", "frn", "frn@123", "Franchise User", default_franchise_id)
-        ensure_role_user("POS", "pos", "pos@123", "POS User")
-        ensure_role_user("GUARD", "grd", "grd@123", "Guard User")
-        ensure_role_user("DELIVERY", "dlv", "dlv@123", "Delivery User")
-
-        for row in cur.execute("SELECT id, wallet_balance FROM franchisees WHERE wallet_balance != 0").fetchall():
-            exists = cur.execute("SELECT 1 FROM wallet_ledger WHERE franchisee_id=? LIMIT 1", (row["id"],)).fetchone()
-            if not exists:
-                cur.execute(
-                    "INSERT INTO wallet_ledger (franchisee_id, entry_type, amount, balance_after, reference_type, remarks, created_at) VALUES (?, 'OPENING_BALANCE', ?, ?, 'MIGRATION', 'Opening wallet balance', ?)",
-                    (row["id"], row["wallet_balance"], row["wallet_balance"], now_str()),
-                )
-
-        product_count = cur.execute("SELECT COUNT(1) as c FROM products").fetchone()["c"]
-        if product_count == 0:
+            # Curated from ALL CAT-6 BASE FILE.xlsx; hierarchy is normalized for assisted retail.
             cur.executemany(
-                """
-                INSERT INTO products (sku_code, product_name, department, mrp, rsp, unit_weight, weight_unit, pack_multiplier, commission_mode, commission_value, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')
-                """,
+                """INSERT OR IGNORE INTO products
+                   (sku_code, product_name, department, category, subcategory, brand, hsn_code, mrp, rsp,
+                    unit_weight, weight_unit, pack_multiplier, commission_mode, commission_value,
+                    gst_rate, price_includes_gst, slab_eligible, status, attributes_json, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'KG', 1, 'PRODUCT', ?, ?, 1, ?, 'ACTIVE', '{}', ?)""",
                 [
-                    ("SKU-001", "Toor Dal 1kg", "Grocery", 180, 165, 1.0, "KG", 1, "PRODUCT", 4),
-                    ("SKU-002", "Rice 5kg", "Grocery", 750, 699, 5.0, "KG", 1, "DEPARTMENT", 3),
-                    ("SKU-003", "Noodle Pack of 5", "Snacks", 150, 135, 0.07, "KG", 5, "PRODUCT", 2),
+                    ("8906008819502", "Fortune Refined Soyabean Oil", "Food & Grocery", "Cooking Essentials", "Edible Oils", "Fortune", "150790", 160, 130, 2, 5, 0, now_str()),
+                    ("8901262030151", "Amul Pure Ghee", "Food & Grocery", "Cooking Essentials", "Ghee", "Amul", "040590", 650, 650, 2, 5, 0, now_str()),
+                    ("23", "Sugar (Loose)", "Food & Grocery", "Staples", "Sugar & Sweeteners", "Unbranded", "1701", 60, 46, 2, 5, 0, now_str()),
+                    ("8901030877148", "Red Label Black Tea", "Beverages", "Tea & Infusions", "Black Tea", "Brooke Bond", "09023020", 560, 490, 8, 5, 1, now_str()),
+                    ("8719514263161", "Philips Emergency LED Bulb 12W", "Home & Living", "Lighting", "Emergency LED Bulbs", "Philips", "85395000", 689, 449, 8, 18, 1, now_str()),
+                    ("A23239020", "Induction Cooktop 2200W", "Electronics & Appliances", "Kitchen Appliances", "Induction Cooktops", "Generic", "8516", 4275, 3199, 8, 18, 1, now_str()),
                 ],
             )
-        # Remove the earlier broad demo catalogue; the product master is intentionally curated.
-        cur.execute("DELETE FROM products WHERE sku_code LIKE 'SKU-%'")
-
-        # Curated from ALL CAT-6 BASE FILE.xlsx; hierarchy is normalized for assisted retail.
-        cur.executemany(
-            """INSERT OR IGNORE INTO products
-               (sku_code, product_name, department, category, subcategory, brand, hsn_code, mrp, rsp,
-                unit_weight, weight_unit, pack_multiplier, commission_mode, commission_value,
-                gst_rate, price_includes_gst, slab_eligible, status, attributes_json, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'KG', 1, 'PRODUCT', ?, ?, 1, ?, 'ACTIVE', '{}', ?)""",
-            [
-                ("8906008819502", "Fortune Refined Soyabean Oil", "Food & Grocery", "Cooking Essentials", "Edible Oils", "Fortune", "150790", 160, 130, 2, 5, 0, now_str()),
-                ("8901262030151", "Amul Pure Ghee", "Food & Grocery", "Cooking Essentials", "Ghee", "Amul", "040590", 650, 650, 2, 5, 0, now_str()),
-                ("23", "Sugar (Loose)", "Food & Grocery", "Staples", "Sugar & Sweeteners", "Unbranded", "1701", 60, 46, 2, 5, 0, now_str()),
-                ("8901030877148", "Red Label Black Tea", "Beverages", "Tea & Infusions", "Black Tea", "Brooke Bond", "09023020", 560, 490, 8, 5, 1, now_str()),
-                ("8719514263161", "Philips Emergency LED Bulb 12W", "Home & Living", "Lighting", "Emergency LED Bulbs", "Philips", "85395000", 689, 449, 8, 18, 1, now_str()),
-                ("A23239020", "Induction Cooktop 2200W", "Electronics & Appliances", "Kitchen Appliances", "Induction Cooktops", "Generic", "8516", 4275, 3199, 8, 18, 1, now_str()),
-            ],
-        )
-        curated_existing = [
-            ("Food & Grocery", "Staples", "Rice", "10063010", 0, "35004"),
-            ("Food & Grocery", "Staples", "Wheat", "1001", 0, "13098"),
-            ("Food & Grocery", "Staples", "Pulses", "07139010", 0, "36042"),
-        ]
-        for department, category, subcategory, hsn_code, gst_rate, sku_code in curated_existing:
-            cur.execute(
-                """UPDATE products SET department=?, category=?, subcategory=?, hsn_code=?, gst_rate=?, price_includes_gst=1,
-                                      commission_mode='PRODUCT', commission_value=8
-                   WHERE sku_code=? AND (category='' OR category IS NULL)""",
-                (department, category, subcategory, hsn_code, gst_rate, sku_code),
-            )
-        cur.execute(
-            "UPDATE products SET commission_mode='PRODUCT', commission_value=8 WHERE sku_code IN ('35004','13098','36042')"
-        )
-        # Sale presentation follows the actual pack: only loose commodities can be reweighed.
-        pack_profiles = [
-            (1, "1 kg", "35004"), (1, "1 kg", "13098"), (1, "1 kg", "36042"),
-            (0, "1 L pouch", "8906008819502"), (0, "1 L tin", "8901262030151"),
-            (1, "1 kg", "23"), (0, "1 kg pouch", "8901030877148"),
-            (0, "1 unit · 12W", "8719514263161"), (0, "1 unit · 2200W", "A23239020"),
-        ]
-        cur.executemany("UPDATE products SET variable_weight=?, pack_label=? WHERE sku_code=?", pack_profiles)
-        cur.execute(
-            "UPDATE products SET department='Electronics & Appliances', category='Lighting', commission_value=12 WHERE sku_code='8719514263161'"
-        )
-        cur.execute(
-            "UPDATE products SET brand='Prestige', product_name='Prestige Induction Cooktop 2200W' WHERE sku_code='A23239020'"
-        )
-        cur.execute("UPDATE products SET commission_value=8 WHERE department='Food & Grocery'")
-        cur.execute("UPDATE products SET commission_value=6 WHERE department='Beverages'")
-        cur.execute("UPDATE products SET commission_value=12 WHERE department='Electronics & Appliances'")
-        cur.execute("UPDATE products SET commission_value=2, slab_eligible=0 WHERE sku_code IN ('8906008819502','8901262030151','23')")
-        department_commissions = [
-            ("Food & Grocery", 8), ("Beverages", 6), ("Electronics & Appliances", 12),
-        ]
-        for department, rate in department_commissions:
-            exists = cur.execute(
-                "SELECT 1 FROM commission_rules WHERE scope='DEPARTMENT' AND lower(department)=lower(?) AND status='ACTIVE' LIMIT 1",
-                (department,),
-            ).fetchone()
-            if not exists:
+            curated_existing = [
+                ("Food & Grocery", "Staples", "Rice", "10063010", 0, "35004"),
+                ("Food & Grocery", "Staples", "Wheat", "1001", 0, "13098"),
+                ("Food & Grocery", "Staples", "Pulses", "07139010", 0, "36042"),
+            ]
+            for department, category, subcategory, hsn_code, gst_rate, sku_code in curated_existing:
                 cur.execute(
-                    "INSERT INTO commission_rules (scope,department,commission_type,commission_value,status,created_at) VALUES ('DEPARTMENT',?,'PERCENT',?,'ACTIVE',?)",
-                    (department, rate, now_str()),
+                    """UPDATE products SET department=?, category=?, subcategory=?, hsn_code=?, gst_rate=?, price_includes_gst=1,
+                                          commission_mode='PRODUCT', commission_value=8
+                       WHERE sku_code=? AND (category='' OR category IS NULL)""",
+                    (department, category, subcategory, hsn_code, gst_rate, sku_code),
                 )
-        for sku_code in ("8906008819502", "8901262030151", "23"):
-            product = cur.execute("SELECT id FROM products WHERE sku_code=?", (sku_code,)).fetchone()
-            if product and not cur.execute(
-                "SELECT 1 FROM commission_rules WHERE scope='PRODUCT' AND product_id=? AND status='ACTIVE' LIMIT 1", (product["id"],)
-            ).fetchone():
-                cur.execute(
-                    "INSERT INTO commission_rules (scope,product_id,commission_type,commission_value,status,created_at) VALUES ('PRODUCT',?,'PERCENT',2,'ACTIVE',?)",
-                    (product["id"], now_str()),
-                )
-        cur.execute(
-            """UPDATE order_items
-               SET product_name_snapshot=COALESCE(NULLIF(product_name_snapshot,''),(SELECT product_name FROM products WHERE id=order_items.product_id),''),
-                   hsn_code=COALESCE(NULLIF(hsn_code,''),(SELECT hsn_code FROM products WHERE id=order_items.product_id),''),
-                   gst_rate=CASE WHEN gst_rate=0 THEN COALESCE((SELECT gst_rate FROM products WHERE id=order_items.product_id),0) ELSE gst_rate END,
-                   slab_eligible=COALESCE((SELECT slab_eligible FROM products WHERE id=order_items.product_id),slab_eligible),
-                   pack_label=COALESCE(NULLIF(pack_label,''),(SELECT pack_label FROM products WHERE id=order_items.product_id),'')
-               WHERE product_name_snapshot='' OR hsn_code=''"""
-        )
-        cur.execute(
-            """UPDATE order_items
-               SET taxable_value=ROUND(CASE WHEN gst_rate>0 THEN line_total*100.0/(100.0+gst_rate) ELSE line_total END,2),
-                   gst_amount=ROUND(line_total-(CASE WHEN gst_rate>0 THEN line_total*100.0/(100.0+gst_rate) ELSE line_total END),2)
-               WHERE taxable_value=0 AND line_total>0"""
-        )
-
-        cur.execute(
-            """INSERT OR IGNORE INTO target_programs
-               (code, name, scope, metric, period_type, timezone, reward_type, status, created_at)
-               VALUES ('MONTHLY-TOTAL-SALES', 'Monthly Total Sales', 'TOTAL_SALE', 'SALES_AMOUNT',
-                       'MONTHLY', 'Asia/Kolkata', 'PERCENT_OF_SALES', 'ACTIVE', ?)""",
-            (now_str(),),
-        )
-        cur.execute(
-            "UPDATE target_programs SET reward_type='PERCENT_OF_SALES' WHERE code='MONTHLY-TOTAL-SALES' AND reward_type='PERCENT_OF_TARGET'"
-        )
-        target_program = cur.execute("SELECT id FROM target_programs WHERE code='MONTHLY-TOTAL-SALES'").fetchone()
-        if target_program:
-            cur.executemany(
-                "INSERT OR IGNORE INTO target_slabs (program_id, threshold_amount, reward_percent, status, created_at) VALUES (?, ?, ?, 'ACTIVE', ?)",
-                [
-                    (target_program["id"], 50000, 2, now_str()),
-                    (target_program["id"], 100000, 4, now_str()),
-                    (target_program["id"], 500000, 10, now_str()),
-                ],
-            )
-        for franchise_row in cur.execute("SELECT id FROM franchisees").fetchall():
             cur.execute(
-                "INSERT OR IGNORE INTO earnings_wallets (franchisee_id, balance, updated_at) VALUES (?, 0, ?)",
-                (franchise_row["id"], now_str()),
+                "UPDATE products SET commission_mode='PRODUCT', commission_value=8 WHERE sku_code IN ('35004','13098','36042')"
             )
-            refresh_target_progress(cur, franchise_row["id"])
+            # Sale presentation follows the actual pack: only loose commodities can be reweighed.
+            pack_profiles = [
+                (1, "1 kg", "35004"), (1, "1 kg", "13098"), (1, "1 kg", "36042"),
+                (0, "1 L pouch", "8906008819502"), (0, "1 L tin", "8901262030151"),
+                (1, "1 kg", "23"), (0, "1 kg pouch", "8901030877148"),
+                (0, "1 unit · 12W", "8719514263161"), (0, "1 unit · 2200W", "A23239020"),
+            ]
+            cur.executemany("UPDATE products SET variable_weight=?, pack_label=? WHERE sku_code=?", pack_profiles)
+            cur.execute(
+                "UPDATE products SET department='Electronics & Appliances', category='Lighting', commission_value=12 WHERE sku_code='8719514263161'"
+            )
+            cur.execute(
+                "UPDATE products SET brand='Prestige', product_name='Prestige Induction Cooktop 2200W' WHERE sku_code='A23239020'"
+            )
+            cur.execute("UPDATE products SET commission_value=8 WHERE department='Food & Grocery'")
+            cur.execute("UPDATE products SET commission_value=6 WHERE department='Beverages'")
+            cur.execute("UPDATE products SET commission_value=12 WHERE department='Electronics & Appliances'")
+            cur.execute("UPDATE products SET commission_value=2, slab_eligible=0 WHERE sku_code IN ('8906008819502','8901262030151','23')")
+            department_commissions = [
+                ("Food & Grocery", 8), ("Beverages", 6), ("Electronics & Appliances", 12),
+            ]
+            for department, rate in department_commissions:
+                exists = cur.execute(
+                    "SELECT 1 FROM commission_rules WHERE scope='DEPARTMENT' AND lower(department)=lower(?) AND status='ACTIVE' LIMIT 1",
+                    (department,),
+                ).fetchone()
+                if not exists:
+                    cur.execute(
+                        "INSERT INTO commission_rules (scope,department,commission_type,commission_value,status,created_at) VALUES ('DEPARTMENT',?,'PERCENT',?,'ACTIVE',?)",
+                        (department, rate, now_str()),
+                    )
+            for sku_code in ("8906008819502", "8901262030151", "23"):
+                product = cur.execute("SELECT id FROM products WHERE sku_code=?", (sku_code,)).fetchone()
+                if product and not cur.execute(
+                    "SELECT 1 FROM commission_rules WHERE scope='PRODUCT' AND product_id=? AND status='ACTIVE' LIMIT 1", (product["id"],)
+                ).fetchone():
+                    cur.execute(
+                        "INSERT INTO commission_rules (scope,product_id,commission_type,commission_value,status,created_at) VALUES ('PRODUCT',?,'PERCENT',2,'ACTIVE',?)",
+                        (product["id"], now_str()),
+                    )
+            cur.execute(
+                """UPDATE order_items
+                   SET product_name_snapshot=COALESCE(NULLIF(product_name_snapshot,''),(SELECT product_name FROM products WHERE id=order_items.product_id),''),
+                       hsn_code=COALESCE(NULLIF(hsn_code,''),(SELECT hsn_code FROM products WHERE id=order_items.product_id),''),
+                       gst_rate=CASE WHEN gst_rate=0 THEN COALESCE((SELECT gst_rate FROM products WHERE id=order_items.product_id),0) ELSE gst_rate END,
+                       slab_eligible=COALESCE((SELECT slab_eligible FROM products WHERE id=order_items.product_id),slab_eligible),
+                       pack_label=COALESCE(NULLIF(pack_label,''),(SELECT pack_label FROM products WHERE id=order_items.product_id),'')
+                   WHERE product_name_snapshot='' OR hsn_code=''"""
+            )
+            cur.execute(
+                """UPDATE order_items
+                   SET taxable_value=ROUND(CASE WHEN gst_rate>0 THEN line_total*100.0/(100.0+gst_rate) ELSE line_total END,2),
+                       gst_amount=ROUND(line_total-(CASE WHEN gst_rate>0 THEN line_total*100.0/(100.0+gst_rate) ELSE line_total END),2)
+                   WHERE taxable_value=0 AND line_total>0"""
+            )
+
+            cur.execute(
+                """INSERT OR IGNORE INTO target_programs
+                   (code, name, scope, metric, period_type, timezone, reward_type, status, created_at)
+                   VALUES ('MONTHLY-TOTAL-SALES', 'Monthly Total Sales', 'TOTAL_SALE', 'SALES_AMOUNT',
+                           'MONTHLY', 'Asia/Kolkata', 'PERCENT_OF_SALES', 'ACTIVE', ?)""",
+                (now_str(),),
+            )
+            cur.execute(
+                "UPDATE target_programs SET reward_type='PERCENT_OF_SALES' WHERE code='MONTHLY-TOTAL-SALES' AND reward_type='PERCENT_OF_TARGET'"
+            )
+            target_program = cur.execute("SELECT id FROM target_programs WHERE code='MONTHLY-TOTAL-SALES'").fetchone()
+            if target_program:
+                cur.executemany(
+                    "INSERT OR IGNORE INTO target_slabs (program_id, threshold_amount, reward_percent, status, created_at) VALUES (?, ?, ?, 'ACTIVE', ?)",
+                    [
+                        (target_program["id"], 50000, 2, now_str()),
+                        (target_program["id"], 100000, 4, now_str()),
+                        (target_program["id"], 500000, 10, now_str()),
+                    ],
+                )
+            for franchise_row in cur.execute("SELECT id FROM franchisees").fetchall():
+                cur.execute(
+                    "INSERT OR IGNORE INTO earnings_wallets (franchisee_id, balance, updated_at) VALUES (?, 0, ?)",
+                    (franchise_row["id"], now_str()),
+                )
+                refresh_target_progress(cur, franchise_row["id"])
+        for account in cur.execute("SELECT id,pin FROM users").fetchall():
+            if not account["pin"].startswith("pbkdf2_sha256$"):
+                cur.execute("UPDATE users SET pin=? WHERE id=?", (hash_password(account["pin"]), account["id"]))
+        if os.getenv("APP_ENV") == "production":
+            upsert_setting(cur, "test_wallet_topup_enabled", "0")
+            for login_id in ("adm", "frn", "pos", "grd", "dlv"):
+                existing_demo = cur.execute("SELECT pin FROM users WHERE phone=?", (login_id,)).fetchone()
+                if existing_demo and verify_password(login_id + "@123", existing_demo["pin"]):
+                    raise RuntimeError("Change all default demo passwords in development before using this database in production")
+            if not cur.execute("SELECT 1 FROM users WHERE role='ADMIN'").fetchone():
+                login_id, password = os.getenv("BOOTSTRAP_ADMIN_LOGIN"), os.getenv("BOOTSTRAP_ADMIN_PASSWORD", "")
+                if not login_id or len(password) < 12 or password.startswith("replace-"):
+                    raise RuntimeError("Set BOOTSTRAP_ADMIN_LOGIN and a 12+ character BOOTSTRAP_ADMIN_PASSWORD for a new production database")
+                cur.execute("INSERT INTO users(name,role,phone,pin) VALUES('Administrator','ADMIN',?,?)", (login_id, hash_password(password)))
+        for f in cur.execute("SELECT id FROM franchisees").fetchall():
+            cur.execute("INSERT OR IGNORE INTO earnings_wallets(franchisee_id,balance,updated_at) VALUES(?,0,?)", (f["id"], now_str()))
         conn.commit()
 
 
 @app.on_event("startup")
 def on_startup() -> None:
+    if DB_PATH.exists() and DB_PATH.stat().st_size:
+        with closing(sqlite3.connect(DB_PATH)) as existing:
+            version = existing.execute("PRAGMA user_version").fetchone()[0]
+            if version < 3:
+                folder = DATA_DIR / "backups"
+                folder.mkdir(parents=True, exist_ok=True)
+                with closing(sqlite3.connect(folder / f"pre-upgrade-{datetime.now():%Y%m%d-%H%M%S}-{uuid4().hex[:8]}.db")) as backup:
+                    existing.backup(backup)
     init_db()
 
-# Ensure local scripts/tests also get initialized without server lifecycle hooks.
-init_db()
+# Database initialization runs only inside the application lifecycle.
 
 
 def current_user(request: Request) -> dict[str, Any] | None:
+    if getattr(request.state, 'bearer_user', None):
+        return request.state.bearer_user
     user_id = request.session.get("user_id")
     if not user_id:
         return None
     with get_conn() as conn:
         row = conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
-        return dict(row) if row else None
+        if not row or row["status"] != "ACTIVE" or request.session.get("auth_version") != row["auth_version"]:
+            return None
+        if row["role"] == "FRANCHISEE":
+            franchise = conn.execute("SELECT status FROM franchisees WHERE id=?", (row["franchisee_id"],)).fetchone()
+            if not franchise or franchise["status"] != "ACTIVE":
+                return None
+        return dict(row)
 
 
 def require_role(request: Request, role: str) -> dict[str, Any] | RedirectResponse:
@@ -1331,13 +1417,7 @@ def r2_media(request: Request, object_key: str) -> Response:
 
 
 def next_code(prefix: str, table: str, column: str) -> str:
-    with get_conn() as conn:
-        row = conn.execute(f"SELECT {column} FROM {table} ORDER BY id DESC LIMIT 1").fetchone()
-        if not row:
-            return f"{prefix}0001"
-        last = row[column]
-        number = int(last.replace(prefix, "")) + 1
-        return f"{prefix}{number:04d}"
+    return prefix + uuid4().hex[:12].upper()
 
 
 def to_kg(unit_weight: float, unit: str) -> float:
@@ -1483,8 +1563,10 @@ def product_values_from_row(row: dict[str, Any]) -> tuple[Any, ...]:
         raise ValueError("status must be ACTIVE or INACTIVE.")
     if pack_multiplier < 1:
         raise ValueError("pack_multiplier must be at least 1.")
-    if gst_rate not in {0, 5, 12, 18, 40}:
-        raise ValueError("gst_rate must be 0, 5, 12, 18, or 40.")
+    if not all(math.isfinite(v) for v in (mrp, rsp, unit_weight, commission_value, gst_rate)) or mrp < rsp or rsp < 0 or unit_weight < 0 or not 0 <= commission_value <= 100 or not 0 <= gst_rate <= 100:
+        raise ValueError("Check product amounts: MRP >= RSP >= 0, nonnegative weight, percentage values from 0 to 100.")
+    if not price_includes_gst:
+        raise ValueError("Import GST-inclusive selling prices; exclusive prices are not supported.")
 
     return (
         sku_code,
@@ -1550,16 +1632,29 @@ def root() -> RedirectResponse:
 
 @app.get("/login", response_class=HTMLResponse)
 def login_page(request: Request, error: str | None = None) -> HTMLResponse:
-    return templates.TemplateResponse("login.html", {"request": request, "error": error})
+    return templates.TemplateResponse("login.html", {"request": request, "error": error, "demo_mode": os.getenv("APP_ENV") != "production" and os.getenv("SEED_DEMO", "1") == "1"})
 
 
 @app.post("/login")
 def login(request: Request, phone: str = Form(...), pin: str = Form(...)) -> RedirectResponse:
     with get_conn() as conn:
-        row = conn.execute("SELECT * FROM users WHERE phone=? AND pin=?", (phone, pin)).fetchone()
-        if not row:
+        key = phone.strip().lower()
+        now = time.time()
+        attempts = conn.execute("SELECT COUNT(*) FROM login_attempts WHERE (login=? OR ip=?) AND created_at>?", (key, request.client.host if request.client else '', now-900)).fetchone()[0]
+        if attempts >= 10:
+            raise HTTPException(429, "Too many login attempts. Try again in 15 minutes.")
+        row = conn.execute("SELECT * FROM users WHERE phone=? AND status='ACTIVE'", (phone.strip(),)).fetchone()
+        if not row or not verify_password(pin, row["pin"]):
+            conn.execute("INSERT INTO login_attempts(login,ip,created_at) VALUES (?,?,?)", (key, request.client.host if request.client else '', now))
+            conn.execute("DELETE FROM login_attempts WHERE created_at<?", (now-86400,))
             return RedirectResponse("/login?error=Invalid+credentials", status_code=303)
+        if row["role"] == "FRANCHISEE" and not conn.execute("SELECT 1 FROM franchisees WHERE id=? AND status='ACTIVE'", (row["franchisee_id"],)).fetchone():
+            return RedirectResponse("/login?error=Account+inactive", status_code=303)
+        conn.execute("DELETE FROM login_attempts WHERE login=?", (key,))
+        request.session.clear()
         request.session["user_id"] = row["id"]
+        request.session["auth_version"] = row["auth_version"]
+        request.session["csrf_token"] = secrets.token_urlsafe(32)
         role_to_path = {
             "ADMIN": "/admin/dashboard",
             "FRANCHISEE": "/franchise/home",
@@ -1570,7 +1665,7 @@ def login(request: Request, phone: str = Form(...), pin: str = Form(...)) -> Red
         return RedirectResponse(role_to_path[row["role"]], status_code=303)
 
 
-@app.get("/logout")
+@app.post("/logout")
 def logout(request: Request) -> RedirectResponse:
     request.session.clear()
     return RedirectResponse("/login", status_code=303)
@@ -1670,17 +1765,26 @@ def create_franchisee(
     delivery_address: str = Form(""),
     area: str = Form(""),
     advance_amount: float = Form(0),
+    initial_password: str = Form(..., min_length=8),
     outlet_id: int = Form(1),
     bank_account_number: str = Form(""),
     ifsc_code: str = Form(""),
     bank_name: str = Form(""),
     gst_number: str = Form(""),
+    request_key: str = Form(...),
 ) -> RedirectResponse:
     user = require_role(request, "ADMIN")
     if isinstance(user, RedirectResponse):
         return user
     with get_conn() as conn:
         cur = conn.cursor()
+        if not operations.claim_mutation(cur, user, "create_franchisee", request_key):
+            return operations.redirect("This request was already processed. Review the ledger.")
+        operations.positive(advance_amount, allow_zero=True)
+        if not cur.execute("SELECT 1 FROM outlets WHERE id=? AND status='ACTIVE'", (outlet_id,)).fetchone():
+            raise HTTPException(400, "Choose an active outlet")
+        if cur.execute("SELECT 1 FROM users WHERE phone=?", (mobile.strip(),)).fetchone():
+            raise HTTPException(409, "Login ID already exists")
         pct = float(get_setting(cur, "wallet_credit_percent", "75"))
         wallet_credit = advance_amount * pct / 100.0
         cur.execute(
@@ -1701,8 +1805,8 @@ def create_franchisee(
             advance_id = cur.lastrowid
             wallet_entry(cur, fid, "ADVANCE_CREDIT", wallet_credit, "ADVANCE", advance_id, f"{pct:.0f}% of onboarding advance", user["id"])
         cur.execute(
-            "INSERT INTO users (name, role, phone, pin, outlet_id, franchisee_id) VALUES (?, 'FRANCHISEE', ?, '2222', ?, ?)",
-            (name, mobile, outlet_id, fid),
+            "INSERT INTO users (name, role, phone, pin, outlet_id, franchisee_id) VALUES (?, 'FRANCHISEE', ?, ?, ?, ?)",
+            (name, mobile, hash_password(initial_password), outlet_id, fid),
         )
         audit(cur, user, "CREATE", "FRANCHISEE", fid, f"Onboarded {shop_name}")
         conn.commit()
@@ -1827,6 +1931,8 @@ def update_settings(
     instant_premium_charge: float = Form(...),
     day_delivery_charge: float = Form(...),
     delivery_per_km: float = Form(8),
+    delivery_pricing_mode: str = Form("PER_KM"),
+    delivery_fixed_charge: float = Form(0),
     weight_tolerance_kg: float = Form(...),
     weight_alert_is_blocking: int = Form(0),
     free_delivery_threshold: float = Form(999),
@@ -1841,6 +1947,13 @@ def update_settings(
     user = require_role(request, "ADMIN")
     if isinstance(user, RedirectResponse):
         return user
+    if delivery_pricing_mode not in {"PER_KM", "FIXED"}:
+        raise HTTPException(400, "Invalid delivery pricing mode")
+    operations.positive(delivery_fixed_charge, allow_zero=True)
+    for value in (instant_premium_charge, day_delivery_charge, delivery_per_km, weight_tolerance_kg, free_delivery_threshold, low_wallet_threshold):
+        operations.positive(value, allow_zero=True)
+    if weight_alert_is_blocking not in (0, 1) or free_delivery_limit_per_day < 0 or delivery_charge_bearer not in {"CUSTOMER", "FRANCHISEE", "BUSINESS"}:
+        raise HTTPException(400, "Invalid delivery rules")
     gstin = business_gstin.strip().upper() if business_gstin is not None else None
     state_code = business_state_code.strip() if business_state_code is not None else None
     if gstin and (len(gstin) != 15 or not gstin.isalnum()):
@@ -1851,6 +1964,8 @@ def update_settings(
         cur = conn.cursor()
         upsert_setting(cur, "instant_premium_charge", str(instant_premium_charge))
         upsert_setting(cur, "day_delivery_charge", str(day_delivery_charge))
+        upsert_setting(cur, "delivery_pricing_mode", delivery_pricing_mode)
+        upsert_setting(cur, "delivery_fixed_charge", str(delivery_fixed_charge))
         upsert_setting(cur, "delivery_per_km", str(delivery_per_km))
         upsert_setting(cur, "weight_tolerance_kg", str(weight_tolerance_kg))
         upsert_setting(cur, "weight_alert_is_blocking", str(weight_alert_is_blocking))
@@ -1906,6 +2021,7 @@ def adjust_wallet(
     adjustment_type: str = Form(...),
     amount: float = Form(...),
     remarks: str = Form(...),
+    request_key: str = Form(...),
 ) -> RedirectResponse:
     user = require_role(request, "ADMIN")
     if isinstance(user, RedirectResponse):
@@ -1914,6 +2030,8 @@ def adjust_wallet(
     try:
         with get_conn() as conn:
             cur = conn.cursor()
+            if not operations.claim_mutation(cur, user, "adjust_wallet", request_key):
+                return operations.redirect("This request was already processed. Review the ledger.")
             wallet_entry(cur, franchisee_id, adjustment_type, signed_amount, "ADJUSTMENT", None, remarks.strip(), user["id"])
             audit(cur, user, adjustment_type, "WALLET", franchisee_id, f"{signed_amount:.2f}: {remarks}")
             conn.commit()
@@ -1927,15 +2045,20 @@ def test_wallet_topup(
     franchisee_id: int,
     request: Request,
     amount: float = Form(...),
+    request_key: str = Form(...),
 ) -> RedirectResponse:
     user = require_role(request, "ADMIN")
     if isinstance(user, RedirectResponse):
         return user
-    if amount <= 0 or amount > 100000:
+    if os.getenv("APP_ENV") == "production":
+        raise HTTPException(403, "Test credits are disabled in production")
+    if not math.isfinite(amount) or amount <= 0 or amount > 100000:
         return RedirectResponse("/admin/dashboard?error=Test+top-up+must+be+between+1+and+100000#franchisees", status_code=303)
     try:
         with get_conn() as conn:
             cur = conn.cursor()
+            if not operations.claim_mutation(cur, user, "test_wallet_topup", request_key):
+                return operations.redirect("This request was already processed. Review the ledger.")
             if get_setting(cur, "test_wallet_topup_enabled", "0") != "1":
                 return RedirectResponse("/admin/dashboard?error=Test+wallet+top-up+is+disabled#franchisees", status_code=303)
             wallet_entry(cur, franchisee_id, "TEST_CREDIT", round(amount, 2), "TEST_MODE", None, "Admin test-period top-up", user["id"])
@@ -1952,6 +2075,7 @@ def record_advance(
     request: Request,
     advance_amount: float = Form(...),
     received_mode: str = Form("BANK"),
+    request_key: str = Form(...),
 ) -> RedirectResponse:
     user = require_role(request, "ADMIN")
     if isinstance(user, RedirectResponse):
@@ -1960,6 +2084,8 @@ def record_advance(
         return RedirectResponse("/admin/dashboard?error=Advance+must+be+positive", status_code=303)
     with get_conn() as conn:
         cur = conn.cursor()
+        if not operations.claim_mutation(cur, user, "record_advance", request_key):
+            return operations.redirect("This request was already processed. Review the ledger.")
         pct = float(get_setting(cur, "wallet_credit_percent", "75"))
         credit = round(advance_amount * pct / 100, 2)
         cur.execute(
@@ -2031,7 +2157,7 @@ def update_franchise_delivery_address(
 @app.post("/admin/users")
 def create_staff_user(
     request: Request,
-    name: str = Form(...), role: str = Form(...), phone: str = Form(...), pin: str = Form(...), outlet_id: int = Form(1),
+    name: str = Form(...), role: str = Form(...), phone: str = Form(...), pin: str = Form(..., min_length=8), outlet_id: int = Form(1),
 ) -> RedirectResponse:
     user = require_role(request, "ADMIN")
     if isinstance(user, RedirectResponse):
@@ -2041,8 +2167,10 @@ def create_staff_user(
     try:
         with get_conn() as conn:
             cur = conn.cursor()
+            if role != "ADMIN" and not cur.execute("SELECT 1 FROM outlets WHERE id=? AND status='ACTIVE'", (outlet_id,)).fetchone():
+                raise HTTPException(400, "Choose an active outlet")
             cur.execute("INSERT INTO users (name, role, phone, pin, outlet_id) VALUES (?, ?, ?, ?, ?)",
-                        (name.strip(), role, phone.strip(), pin, outlet_id))
+                        (name.strip(), role, phone.strip(), hash_password(pin), outlet_id))
             audit(cur, user, "CREATE", "USER", cur.lastrowid, role)
             conn.commit()
     except sqlite3.IntegrityError:
@@ -2055,18 +2183,22 @@ def create_commission_rule(
     request: Request,
     scope: str = Form(...), department: str = Form(""), product_id: int | None = Form(None),
     commission_type: str = Form("PERCENT"), commission_value: float = Form(...),
+    starts_on: str = Form(""), ends_on: str = Form(""),
 ) -> RedirectResponse:
     user = require_role(request, "ADMIN")
     if isinstance(user, RedirectResponse):
         return user
+    operations.validate_dates(starts_on, ends_on)
+    if not math.isfinite(commission_value) or (commission_type == "PERCENT" and commission_value > 100):
+        raise HTTPException(400, "Invalid commission amount")
     scope = "PRODUCT" if scope == "PRODUCT" else "DEPARTMENT"
     if commission_value < 0 or (scope == "PRODUCT" and not product_id) or (scope == "DEPARTMENT" and not department.strip()):
         return RedirectResponse("/admin/dashboard?error=Complete+the+commission+rule", status_code=303)
     with get_conn() as conn:
         cur = conn.cursor()
-        cur.execute("INSERT INTO commission_rules (scope, department, product_id, commission_type, commission_value, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        cur.execute("INSERT INTO commission_rules (scope, department, product_id, commission_type, commission_value, created_at, starts_on, ends_on) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                     (scope, department.strip() or None, product_id if scope == "PRODUCT" else None,
-                     "FIXED" if commission_type == "FIXED" else "PERCENT", commission_value, now_str()))
+                     "FIXED" if commission_type == "FIXED" else "PERCENT", commission_value, now_str(), starts_on, ends_on))
         audit(cur, user, "CREATE", "COMMISSION_RULE", cur.lastrowid, f"{scope} {commission_value}")
         conn.commit()
     return RedirectResponse("/admin/dashboard?message=Commission+rule+saved", status_code=303)
@@ -2084,7 +2216,8 @@ def admin_order_status(order_id: int, request: Request, status: str = Form(...),
             return RedirectResponse("/admin/dashboard?error=Order+not+found", status_code=303)
         if status == "EXECUTED" and order["status"] == "ON_HOLD":
             franchise = cur.execute("SELECT wallet_balance, status FROM franchisees WHERE id=?", (order["franchisee_id"],)).fetchone()
-            debit = float(order["total"])
+            dispatch_rules.validate_mode(cur, order["franchisee_id"], order["fulfillment_mode"])
+            debit = float(order["wallet_required"])
             if not franchise or franchise["status"] != "ACTIVE" or float(franchise["wallet_balance"]) < debit:
                 return RedirectResponse("/admin/dashboard?error=Insufficient+wallet+or+inactive+franchise", status_code=303)
             wallet_entry(cur, order["franchisee_id"], "ORDER_DEBIT", -debit, "ORDER", order_id, "Order executed by admin", user["id"])
@@ -2108,11 +2241,15 @@ def admin_order_status(order_id: int, request: Request, status: str = Form(...),
 def create_promotion(
     request: Request,
     name: str = Form(...), scope: str = Form(...), department: str = Form(""), product_id: int | None = Form(None),
+    franchisee_id: int | None = Form(None),
     discount_type: str = Form("PERCENT"), discount_value: float = Form(...), starts_on: str = Form(""), ends_on: str = Form(""),
 ) -> RedirectResponse:
     user = require_role(request, "ADMIN")
     if isinstance(user, RedirectResponse):
         return user
+    operations.validate_dates(starts_on, ends_on)
+    if not math.isfinite(discount_value) or discount_type not in {"PERCENT", "FIXED"} or (discount_type == "PERCENT" and discount_value > 100):
+        raise HTTPException(400, "Invalid promotion discount")
     scope = "PRODUCT" if scope == "PRODUCT" else "DEPARTMENT"
     if discount_value <= 0 or (scope == "PRODUCT" and not product_id) or (scope == "DEPARTMENT" and not department.strip()):
         return RedirectResponse("/admin/dashboard?error=Complete+the+promotion+rule", status_code=303)
@@ -2120,10 +2257,12 @@ def create_promotion(
         return RedirectResponse("/admin/dashboard?error=Promotion+end+date+must+follow+start+date", status_code=303)
     with get_conn() as conn:
         cur = conn.cursor()
+        if franchisee_id and not cur.execute("SELECT 1 FROM franchisees WHERE id=?", (franchisee_id,)).fetchone():
+            raise HTTPException(404, "Franchise not found")
         cur.execute(
-            "INSERT INTO promotions (name, scope, department, product_id, discount_type, discount_value, starts_on, ends_on, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO promotions (name, scope, department, product_id, discount_type, discount_value, starts_on, ends_on, created_at, franchisee_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (name.strip(), scope, department.strip() or None, product_id if scope == "PRODUCT" else None,
-             "FIXED" if discount_type == "FIXED" else "PERCENT", discount_value, starts_on or None, ends_on or None, now_str()),
+             "FIXED" if discount_type == "FIXED" else "PERCENT", discount_value, starts_on or None, ends_on or None, now_str(), franchisee_id),
         )
         audit(cur, user, "CREATE", "PROMOTION", cur.lastrowid, name)
         conn.commit()
@@ -2143,7 +2282,7 @@ def franchise_home(request: Request, period: str = "month", date_from: str = "",
         product_rows = conn.execute("SELECT * FROM products WHERE status='ACTIVE' ORDER BY id DESC").fetchall()
         products = []
         for row in product_rows:
-            sale_price, deal_name = resolve_deal(conn.cursor(), row, float(row["rsp"]))
+            sale_price, deal_name = resolve_deal(conn.cursor(), row, float(row["rsp"]), user["franchisee_id"])
             products.append(dict(row) | {
                 "sale_price": sale_price,
                 "deal_name": deal_name,
@@ -2160,6 +2299,47 @@ def franchise_home(request: Request, period: str = "month", date_from: str = "",
                LEFT JOIN bills b ON b.order_id=o.id
                WHERE o.franchisee_id=? ORDER BY o.id DESC LIMIT 50""", (user["franchisee_id"],)
         ).fetchall()
+        order_ids = [row["id"] for row in orders]
+        order_timelines: dict[int, list[dict[str, str]]] = {order_id: [] for order_id in order_ids}
+        if order_ids:
+            event_rows = conn.execute(
+                f"""SELECT order_id, status, notes, created_at FROM order_events
+                    WHERE order_id IN ({','.join('?' for _ in order_ids)})
+                    ORDER BY created_at, id""",
+                order_ids,
+            ).fetchall()
+            event_titles = {
+                "ON_HOLD": "Waiting for wallet balance",
+                "EXECUTED": "Order confirmed and sent to outlet",
+                "BILLED": "Outlet bill created",
+                "PACKED_INDIVIDUALLY": "Order packed at outlet",
+                "DOCKET_CREATED": "Grouped into a dispatch docket",
+                "HANDED_TO_GUARD": "Sent to guard desk",
+                "AT_GUARD_DESK": "Received by guard",
+                "SEAL_CHECK": "Seal inspection recorded",
+                "WEIGHT_CHECK_PASSED": "Weight check passed",
+                "WEIGHT_CHECK_ALERT": "Weight needs recheck",
+                "PICKED_BY_FRANCHISEE": "Picked up - order complete",
+                "PICKED_BY_DELIVERY": "Handed to delivery partner",
+                "DELIVERY_ASSIGNED": "Awaiting delivery partner pickup",
+                "ACCEPTED": "Delivery partner accepted the assignment",
+                "PICKED_UP": "Delivery partner collected the parcel",
+                "OUT_FOR_DELIVERY": "Delivery partner is on the way",
+                "ASSIGNED": "Delivery partner assigned",
+                "DELIVERED": "Delivered - order complete",
+                "DELIVERY_FAILED": "Delivery issue reported",
+                "CANCELLED": "Order cancelled",
+                "REOPEN": "Delivery reopened by admin",
+                "REASSIGN": "Delivery reassigned by admin",
+                "FORCE_CLOSE": "Delivery closed by admin",
+            }
+            for event in event_rows:
+                order_timelines[event["order_id"]].append({
+                    "title": event_titles.get(event["status"], event["status"].replace("_", " ").title()),
+                    "status": event["status"],
+                    "notes": (event["notes"] or "").strip(),
+                    "created_at": event["created_at"] or "",
+                })
         dockets = conn.execute(
             "SELECT * FROM dockets WHERE franchisee_id=? ORDER BY id DESC LIMIT 10", (user["franchisee_id"],)
         ).fetchall()
@@ -2171,7 +2351,7 @@ def franchise_home(request: Request, period: str = "month", date_from: str = "",
         settings = dict(conn.execute("SELECT key, value FROM settings").fetchall())
         departments = conn.execute("SELECT DISTINCT department FROM products WHERE status='ACTIVE' ORDER BY department").fetchall()
         free_deliveries_used = conn.execute(
-            "SELECT COUNT(1) c FROM orders WHERE franchisee_id=? AND fulfillment_mode='DELIVERY_MAN' AND delivery_charge=0 AND substr(created_at,1,10)=?",
+            "SELECT COUNT(1) c FROM orders WHERE franchisee_id=? AND fulfillment_mode='DELIVERY_MAN' AND delivery_cost=0 AND status NOT IN ('CANCELLED','ON_HOLD') AND substr(created_at,1,10)=?",
             (user["franchisee_id"], now_str()[:10]),
         ).fetchone()["c"]
         wallet_ledger = conn.execute(
@@ -2187,6 +2367,7 @@ def franchise_home(request: Request, period: str = "month", date_from: str = "",
         guide = earning_guide(conn.cursor(), user["franchisee_id"], products, targets)
         summary_start, summary_end, summary_label = report_period(period, date_from, date_to)
         summary = franchise_summary(conn.cursor(), user["franchisee_id"], summary_start, summary_end, summary_label)
+        available_modes = dispatch_rules.allowed_modes(cur, franchise)
         bank_account = conn.execute(
             "SELECT * FROM franchise_bank_accounts WHERE franchisee_id=? AND status!='REMOVED' ORDER BY is_primary DESC, id DESC LIMIT 1",
             (user["franchisee_id"],),
@@ -2194,23 +2375,63 @@ def franchise_home(request: Request, period: str = "month", date_from: str = "",
         dispatches = conn.execute(
             """
             SELECT 'BILL' entity_type, b.id entity_id, b.bill_number number, b.status, b.expected_weight_kg, b.created_at,
-                   o.customer_name, o.order_number
+                   o.customer_name, o.order_number,
+                   (SELECT t.status FROM delivery_tasks t WHERE t.entity_type='BILL' AND t.entity_id=b.id ORDER BY t.id DESC LIMIT 1) task_status,
+                   1 order_count, o.fulfillment_mode,
+                   EXISTS(SELECT 1 FROM docket_bills db WHERE db.bill_id=b.id) is_grouped,
+                   (SELECT t.id FROM delivery_tasks t WHERE t.entity_type='BILL' AND t.entity_id=b.id ORDER BY t.id DESC LIMIT 1) task_id
             FROM bills b JOIN orders o ON o.id=b.order_id WHERE b.franchisee_id=?
             UNION ALL
             SELECT 'DOCKET', d.id entity_id, d.docket_number, d.status, d.expected_weight_kg, d.created_at,
-                   'Multiple orders', (SELECT group_concat(b.bill_number, ', ') FROM docket_bills db JOIN bills b ON b.id=db.bill_id WHERE db.docket_id=d.id)
+                   'Multiple orders', (SELECT group_concat(b.bill_number, ', ') FROM docket_bills db JOIN bills b ON b.id=db.bill_id WHERE db.docket_id=d.id),
+                   (SELECT t.status FROM delivery_tasks t WHERE t.entity_type='DOCKET' AND t.entity_id=d.id ORDER BY t.id DESC LIMIT 1),
+                   (SELECT COUNT(*) FROM docket_bills db WHERE db.docket_id=d.id),
+                   MIN(o.fulfillment_mode), 0,
+                   (SELECT t.id FROM delivery_tasks t WHERE t.entity_type='DOCKET' AND t.entity_id=d.id ORDER BY t.id DESC LIMIT 1)
             FROM dockets d WHERE d.franchisee_id=? ORDER BY 2 DESC LIMIT 30
             """, (user["franchisee_id"], user["franchisee_id"])
         ).fetchall()
+        dispatch_stage_labels = {
+            "BILLED": "Bill created",
+            "PACKED_INDIVIDUALLY": "Packed at outlet",
+            "DOCKET_CREATED": "Grouped for dispatch",
+            "HANDED_TO_GUARD": "Sent to guard desk",
+            "AT_GUARD_DESK": "At guard desk",
+            "WEIGHT_CHECK_ALERT": "Weight needs recheck",
+            "WEIGHT_CHECK_PASSED": "Verified by guard",
+            "DELIVERY_ASSIGNED": "Delivery partner assigned - awaiting pickup",
+            "PICKED_BY_FRANCHISEE": "Picked up",
+            "PICKED_BY_DELIVERY": "Handed to delivery partner",
+            "OUT_FOR_DELIVERY": "On the way to franchise",
+            "DELIVERED": "Delivered to franchise",
+        }
+        task_stage_labels = {
+            "ASSIGNED": "Delivery assigned",
+            "ACCEPTED": "Delivery partner accepted",
+            "PICKED_UP": "Collected by delivery partner",
+            "OUT_FOR_DELIVERY": "On the way to franchise",
+            "DELIVERED": "Delivered to franchise",
+            "FAILED": "Delivery needs attention",
+        }
+        dispatches = [dict(row) | {
+            "status_label": task_stage_labels.get(row["task_status"], dispatch_stage_labels.get(row["status"], row["status"].replace("_", " ").title())),
+            "can_pickup_code": row["fulfillment_mode"] == "FRANCHISE_PICKUP" and row["status"] in {"WEIGHT_CHECK_PASSED", "WEIGHT_CHECK_ALERT"} and (row["entity_type"] == "DOCKET" or not row["is_grouped"]),
+            "can_delivery_code": row["fulfillment_mode"] == "DELIVERY_MAN" and row["task_status"] == "OUT_FOR_DELIVERY" and row["task_id"] is not None,
+            "dispatch_info": (
+                f"{row['order_count']} bills · {row['order_number']}" if row["entity_type"] == "DOCKET"
+                else f"Order {row['order_number']} · {row['customer_name']}"
+            ),
+        } for row in dispatches]
     return templates.TemplateResponse(
         "franchise_home.html",
         {"request": request, "user": user, "franchise": franchise, "products": products, "orders": orders,
          "dockets": dockets, "outlet": outlet, "earnings": earnings, "settings": settings, "departments": departments,
+         "order_timelines": order_timelines,
          "wallet_ledger": wallet_ledger, "earnings_wallet": earnings_wallet,
          "earnings_wallet_ledger": earnings_wallet_ledger, "targets": targets,
          "guide": guide, "summary": summary, "summary_period": period,
          "bank_account": bank_account, "dispatches": dispatches,
-         "free_deliveries_used": free_deliveries_used},
+         "allowed_modes": available_modes, "free_deliveries_used": free_deliveries_used},
     )
 
 
@@ -2222,7 +2443,7 @@ def customer_bill(request: Request, bill_id: int):
     with get_conn() as conn:
         bill = conn.execute(
             """SELECT b.*, o.order_number, o.customer_name, o.customer_phone, o.item_subtotal,
-                      o.delivery_charge, o.total, o.fulfillment_mode, o.created_at order_created_at,
+                      o.delivery_charge, o.total, o.fulfillment_mode, o.supply_state_code, o.supplier_state_code, o.created_at order_created_at,
                       f.shop_name, f.name franchise_name, f.address franchise_address, f.gst_number franchise_gstin,
                       ot.name outlet_name, ot.code outlet_code, ot.address outlet_address
                FROM bills b JOIN orders o ON o.id=b.order_id JOIN franchisees f ON f.id=b.franchisee_id
@@ -2238,7 +2459,7 @@ def customer_bill(request: Request, bill_id: int):
             (bill["order_id"],),
         ).fetchall()
         items = [dict(row) for row in item_rows]
-        tax_breakdown = invoice_tax_breakdown(items, float(bill["delivery_charge"] or 0))
+        tax_breakdown = invoice_tax_breakdown(items, float(bill["delivery_charge"] or 0), bill["supply_state_code"] != bill["supplier_state_code"])
         settings = dict(conn.execute("SELECT key,value FROM settings").fetchall())
     item_text = ", ".join(
         f"{item['product_name']} {item['pack_label'] or ('%g kg' % item['selected_weight_kg'])} x {item['qty']}"
@@ -2298,8 +2519,8 @@ def download_franchise_summary(
                                ("FONTNAME",(0,0),(-1,0),"Helvetica-Bold"),("GRID",(0,0),(-1,-1),.35,colors.HexColor("#ccd8d1")),
                                ("ROWBACKGROUNDS",(0,1),(-1,-1),[colors.white,colors.HexColor("#f3f7f4")]),("PADDING",(0,0),(-1,-1),7)]))
     story.extend([table, Spacer(1, 7*mm), Paragraph("GST rate-wise breakup", styles["Heading2"])])
-    tax_rows = [["Rate", "Taxable", "CGST", "SGST", "Total GST", "Gross"]]
-    tax_rows.extend([[f"{row['gst_rate']:g}%", f"{row['taxable']:.2f}", f"{row['tax']/2:.2f}", f"{row['tax']-round(row['tax']/2,2):.2f}", f"{row['tax']:.2f}", f"{row['gross']:.2f}"] for row in summary["tax_breakdown"]])
+    tax_rows = [["Rate", "Taxable", "CGST", "SGST", "IGST", "Total GST", "Gross"]]
+    tax_rows.extend([[f"{row['gst_rate']:g}%", f"{row['taxable']:.2f}", f"{row['cgst']:.2f}", f"{row['sgst']:.2f}", f"{row['igst']:.2f}", f"{row['tax']:.2f}", f"{row['gross']:.2f}"] for row in summary["tax_breakdown"]])
     tax_table = Table(tax_rows, repeatRows=1)
     tax_table.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,0),colors.HexColor("#dff0e5")),("FONTNAME",(0,0),(-1,0),"Helvetica-Bold"),
                                    ("GRID",(0,0),(-1,-1),.35,colors.HexColor("#ccd8d1")),("ALIGN",(1,1),(-1,-1),"RIGHT"),("PADDING",(0,0),(-1,-1),6)]))
@@ -2311,7 +2532,7 @@ def download_franchise_summary(
 
 
 @app.post("/franchise/earnings/transfer")
-def transfer_earnings_to_purchase_wallet(request: Request, amount: float = Form(...)) -> RedirectResponse:
+def transfer_earnings_to_purchase_wallet(request: Request, amount: float = Form(...), request_key: str = Form(...)) -> RedirectResponse:
     user = require_role(request, "FRANCHISEE")
     if isinstance(user, RedirectResponse):
         return user
@@ -2321,6 +2542,8 @@ def transfer_earnings_to_purchase_wallet(request: Request, amount: float = Form(
     try:
         with get_conn() as conn:
             cur = conn.cursor()
+            if not operations.claim_mutation(cur, user, "transfer_earnings_to_purchase_wallet", request_key):
+                return operations.redirect("This request was already processed. Review the ledger.")
             wallet = cur.execute("SELECT balance FROM earnings_wallets WHERE franchisee_id=?", (user["franchisee_id"],)).fetchone()
             if not wallet or amount > float(wallet["balance"]):
                 raise ValueError("Insufficient earnings wallet balance")
@@ -2359,10 +2582,11 @@ def execute_held_order(order_id: int, request: Request) -> RedirectResponse:
         franchise = cur.execute("SELECT * FROM franchisees WHERE id=?", (user["franchisee_id"],)).fetchone()
         if not order or order["status"] != "ON_HOLD":
             return RedirectResponse("/franchise/home?error=invalid_order", status_code=303)
-        if not franchise or franchise["status"] != "ACTIVE" or float(franchise["wallet_balance"]) < float(order["total"]):
+        if not franchise or franchise["status"] != "ACTIVE" or float(franchise["wallet_balance"]) < float(order["wallet_required"]):
             return RedirectResponse("/franchise/home?error=wallet", status_code=303)
-        wallet_entry(cur, franchise["id"], "ORDER_DEBIT", -float(order["total"]), "ORDER", order_id, order["order_number"], user["id"])
-        cur.execute("UPDATE orders SET status='EXECUTED', wallet_debit_amount=?, executed_at=?, updated_at=? WHERE id=?", (order["total"], now_str(), now_str(), order_id))
+        dispatch_rules.validate_mode(cur, franchise["id"], order["fulfillment_mode"])
+        wallet_entry(cur, franchise["id"], "ORDER_DEBIT", -float(order["wallet_required"]), "ORDER", order_id, order["order_number"], user["id"])
+        cur.execute("UPDATE orders SET status='EXECUTED', wallet_debit_amount=?, executed_at=?, updated_at=? WHERE id=?", (order["wallet_required"], now_str(), now_str(), order_id))
         add_order_event(cur, order_id, "EXECUTED", "Executed by franchisee", user["id"])
         audit(cur, user, "EXECUTE", "ORDER", order_id, order["order_number"])
         refresh_target_progress(cur, franchise["id"], user["id"])
@@ -2383,6 +2607,7 @@ def create_order(
     customer_phone: str = Form(""),
     customer_address: str = Form(""),
     distance_km: float = Form(0),
+    request_key: str = Form(...),
 ) -> RedirectResponse:
     user = require_role(request, "FRANCHISEE")
     if isinstance(user, RedirectResponse):
@@ -2398,16 +2623,29 @@ def create_order(
             cart = json.loads(cart_json) if cart_json else [{"id": product_id, "qty": qty}]
         except (json.JSONDecodeError, TypeError):
             cart = []
-        cart = [item for item in cart if item.get("id") and int(item.get("qty", 0)) > 0]
+        try:
+            if not isinstance(cart, list) or len(cart) > 200:
+                raise ValueError()
+            cart = [item for item in cart if isinstance(item, dict) and item.get("id") and 0 < int(item.get("qty", 0)) <= 1000]
+        except (ValueError, TypeError):
+            raise HTTPException(400, "Invalid basket quantities")
+        if fulfillment_mode not in {"DELIVERY_MAN", "FRANCHISE_PICKUP"} or delivery_type not in {"DAY", "INSTANT"} or status_mode not in {"EXECUTED", "ON_HOLD"}:
+            raise HTTPException(400, "Invalid order options")
+        if not math.isfinite(distance_km) or not 0 <= distance_km <= 1000:
+            raise HTTPException(400, "Invalid distance")
         if not franchise or not cart:
             return RedirectResponse("/franchise/home", status_code=303)
         if franchise["status"] != "ACTIVE":
             return RedirectResponse("/franchise/home?error=inactive", status_code=303)
+        dispatch_rules.validate_mode(cur, franchise["id"], fulfillment_mode)
         franchise_delivery_address = (franchise["delivery_address"] or franchise["address"] or "").strip()
         if fulfillment_mode == "DELIVERY_MAN" and len(franchise_delivery_address) < 5:
             return RedirectResponse("/franchise/home?error=delivery_address", status_code=303)
 
-        product_ids = [int(item["id"]) for item in cart]
+        try:
+            product_ids = [int(item["id"]) for item in cart]
+        except (TypeError, ValueError):
+            raise HTTPException(400, "Invalid product ID")
         product_rows = cur.execute(
             f"SELECT * FROM products WHERE id IN ({','.join(['?'] * len(product_ids))}) AND status='ACTIVE'",
             tuple(product_ids),
@@ -2431,7 +2669,7 @@ def create_order(
                 continue
             if not variable_weight:
                 selected_weight_kg = base_weight_kg
-            base_sale_price, _ = resolve_deal(cur, product, float(product["rsp"]))
+            base_sale_price, _ = resolve_deal(cur, product, float(product["rsp"]), user["franchisee_id"])
             sale_price = round(base_sale_price * selected_weight_kg / base_weight_kg, 2) if variable_weight else round(base_sale_price, 2)
             line_total = round(sale_price * item_qty, 2)
             unit_commission = round(resolve_commission(cur, product, sale_price), 2)
@@ -2446,6 +2684,8 @@ def create_order(
         if not lines:
             return RedirectResponse("/franchise/home", status_code=303)
 
+        if fulfillment_mode == "DELIVERY_MAN" and franchise["route_distance_km"] is not None and franchise["route_outlet_id"] == franchise["outlet_id"]:
+            distance_km = float(franchise["route_distance_km"])
         instant_charge = float(get_setting(cur, "instant_premium_charge", "40"))
         day_charge = float(get_setting(cur, "day_delivery_charge", "10"))
         per_km = float(get_setting(cur, "delivery_per_km", "8"))
@@ -2455,20 +2695,28 @@ def create_order(
             free_limit = int(float(get_setting(cur, "free_delivery_limit_per_day", "3")))
             today = now_str()[:10]
             free_used = cur.execute(
-                "SELECT COUNT(1) c FROM orders WHERE franchisee_id=? AND fulfillment_mode='DELIVERY_MAN' AND delivery_charge=0 AND substr(created_at,1,10)=?",
+                "SELECT COUNT(1) c FROM orders WHERE franchisee_id=? AND fulfillment_mode='DELIVERY_MAN' AND delivery_cost=0 AND status NOT IN ('CANCELLED','ON_HOLD') AND substr(created_at,1,10)=?",
                 (user["franchisee_id"], today),
             ).fetchone()["c"]
             if item_subtotal >= threshold and free_used < free_limit and delivery_type == "DAY":
                 delivery_charge = 0.0
             else:
-                delivery_charge = max(0, distance_km) * per_km + (instant_charge if delivery_type == "INSTANT" else day_charge)
+                delivery_base = float(get_setting(cur, "delivery_fixed_charge", "0")) if get_setting(cur, "delivery_pricing_mode", "PER_KM") == "FIXED" else max(0, distance_km) * per_km
+                delivery_charge = delivery_base + (instant_charge if delivery_type == "INSTANT" else day_charge)
+        delivery_cost = round(delivery_charge, 2)
+        bearer = get_setting(cur, "delivery_charge_bearer", "CUSTOMER")
+        delivery_charge = delivery_cost if bearer == "CUSTOMER" else 0.0
         total = round(item_subtotal + delivery_charge, 2)
         payable_to_outlet = round(max(0, item_subtotal - commission_total), 2)
+        wallet_required = round(payable_to_outlet + (delivery_cost if bearer != "BUSINESS" else 0), 2)
 
         final_status = "ON_HOLD" if status_mode == "ON_HOLD" else "EXECUTED"
-        if final_status == "EXECUTED" and total > float(franchise["wallet_balance"]):
+        if final_status == "EXECUTED" and wallet_required > float(franchise["wallet_balance"]):
             final_status = "ON_HOLD"
 
+        previous = cur.execute("SELECT order_number,status FROM orders WHERE request_key=? AND franchisee_id=?", (request_key, user["franchisee_id"])).fetchone() if request_key else None
+        if previous:
+            return RedirectResponse(f"/franchise/home?created={previous['order_number']}&status={previous['status']}", status_code=303)
         order_number = next_code("ORD-", "orders", "order_number")
         created_timestamp = now_str()
         executed_timestamp = created_timestamp if final_status == "EXECUTED" else None
@@ -2484,9 +2732,10 @@ def create_order(
              customer_phone, franchise_delivery_address, max(0, distance_km)),
         )
         order_id = cur.lastrowid
+        cur.execute("UPDATE orders SET request_key=?, supply_state_code=?, supplier_state_code=?, wallet_required=?,delivery_cost=?,delivery_charge_bearer=? WHERE id=?", (request_key or uuid4().hex, franchise["state_code"], get_setting(cur, "business_state_code", "23"), wallet_required, delivery_cost, bearer, order_id))
         cur.execute(
             "UPDATE orders SET wallet_debit_amount=?, payable_to_outlet=?, updated_at=? WHERE id=?",
-            (total if final_status == "EXECUTED" else 0, payable_to_outlet, now_str(), order_id),
+            (wallet_required if final_status == "EXECUTED" else 0, payable_to_outlet, now_str(), order_id),
         )
         for product, item_qty, selected_weight_kg, sale_price, line_total, unit_commission, line_commission, gst_rate, taxable_value, gst_amount in lines:
             line_weight = selected_weight_kg * item_qty
@@ -2498,12 +2747,12 @@ def create_order(
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (order_id, product["id"], item_qty, sale_price, line_total, line_weight, selected_weight_kg,
                  product["product_name"], product["hsn_code"], gst_rate, taxable_value, gst_amount, product["slab_eligible"],
-                 product["pack_label"] if not variable_weight else ("500 g" if selected_weight_kg == 0.5 else f"{selected_weight_kg:g} kg"),
+                 product["pack_label"] if not product["variable_weight"] else ("500 g" if selected_weight_kg == 0.5 else f"{selected_weight_kg:g} kg"),
                  unit_commission, line_commission),
             )
 
         if final_status == "EXECUTED":
-            wallet_entry(cur, franchise["id"], "ORDER_DEBIT", -total, "ORDER", order_id, order_number, user["id"])
+            wallet_entry(cur, franchise["id"], "ORDER_DEBIT", -wallet_required, "ORDER", order_id, order_number, user["id"])
 
         add_order_event(cur, order_id, final_status, "Order created", user["id"])
         audit(cur, user, "CREATE", "ORDER", order_id, f"{order_number} {final_status} total {total:.2f}")
@@ -2526,18 +2775,35 @@ def pos_home(request: Request):
         orders = conn.execute(
             """
             SELECT o.*, f.name as franchisee_name, f.shop_name,
-                   (SELECT COALESCE(SUM(oi.qty),0) FROM order_items oi WHERE oi.order_id=o.id) item_count
+                   (SELECT COALESCE(SUM(oi.qty),0) FROM order_items oi WHERE oi.order_id=o.id) item_count,
+                   (SELECT COALESCE(SUM(pi.qty),0) FROM order_items oi LEFT JOIN picked_items pi ON pi.order_item_id=oi.id WHERE oi.order_id=o.id) picked_count,
+                   ps.user_id picker_id, pu.name picker_name, ps.expires_at pick_expires_at
             FROM orders o
             JOIN franchisees f ON f.id=o.franchisee_id
+            LEFT JOIN pick_sessions ps ON ps.order_id=o.id
+            LEFT JOIN users pu ON pu.id=ps.user_id
             WHERE o.status='EXECUTED' AND o.outlet_id=? AND o.id NOT IN (SELECT order_id FROM bills)
             ORDER BY o.id DESC
+            """, (user["outlet_id"] or 1,)
+        ).fetchall()
+        order_items = conn.execute(
+            """
+            SELECT oi.id, oi.order_id, oi.product_name_snapshot, oi.pack_label, oi.qty,
+                   p.sku_code, COALESCE(pi.qty,0) picked
+            FROM order_items oi
+            JOIN orders o ON o.id=oi.order_id
+            JOIN products p ON p.id=oi.product_id
+            LEFT JOIN picked_items pi ON pi.order_item_id=oi.id
+            WHERE o.outlet_id=? AND o.status='EXECUTED'
+              AND o.id NOT IN (SELECT order_id FROM bills)
+            ORDER BY oi.id
             """, (user["outlet_id"] or 1,)
         ).fetchall()
         open_bills = conn.execute(
             """
             SELECT b.*, f.name as franchisee_name
             FROM bills b JOIN franchisees f ON f.id=b.franchisee_id
-            WHERE b.outlet_id=? AND b.status IN ('BILLED', 'PACKED_INDIVIDUALLY', 'DOCKET_CREATED', 'HANDED_TO_GUARD', 'AT_GUARD_DESK', 'WEIGHT_CHECK_ALERT', 'WEIGHT_CHECK_PASSED')
+            WHERE b.outlet_id=? AND b.status IN ('BILLED', 'PACKED_INDIVIDUALLY', 'DOCKET_CREATED', 'HANDED_TO_GUARD', 'AT_GUARD_DESK', 'WEIGHT_CHECK_ALERT', 'WEIGHT_CHECK_PASSED', 'DELIVERY_ASSIGNED')
             ORDER BY b.id DESC
             """, (user["outlet_id"] or 1,)
         ).fetchall()
@@ -2551,7 +2817,8 @@ def pos_home(request: Request):
             """, (user["outlet_id"] or 1,)
         ).fetchall()
         outlet = conn.execute("SELECT * FROM outlets WHERE id=?", (user["outlet_id"] or 1,)).fetchone()
-    return templates.TemplateResponse("pos_home.html", {"request": request, "user": user, "orders": orders, "open_bills": open_bills, "dockets": dockets, "outlet": outlet})
+        picking_required = get_setting(conn.cursor(), "require_picking", "1") == "1"
+    return templates.TemplateResponse("pos_home.html", {"request": request, "user": user, "orders": orders, "order_items": order_items, "open_bills": open_bills, "dockets": dockets, "outlet": outlet, "picking_required": picking_required, "error": request.query_params.get("error", ""), "message": request.query_params.get("message", "")})
 
 
 @app.post("/pos/bills")
@@ -2565,6 +2832,7 @@ def create_bill(request: Request, order_id: int = Form(...)) -> RedirectResponse
         existing = cur.execute("SELECT 1 FROM bills WHERE order_id=?", (order_id,)).fetchone()
         if not order or existing:
             return RedirectResponse("/pos/home", status_code=303)
+        operations.require_picked(cur, order, user)
         expected = cur.execute("SELECT COALESCE(SUM(line_weight_kg),0) w FROM order_items WHERE order_id=?", (order_id,)).fetchone()["w"]
         bill_number = next_code("BILL-", "bills", "bill_number")
         cur.execute(
@@ -2588,7 +2856,7 @@ def create_docket(request: Request, bill_ids: str = Form(...)) -> RedirectRespon
     if isinstance(user, RedirectResponse):
         return user
     selected = [int(x.strip()) for x in bill_ids.split(",") if x.strip().isdigit()]
-    if not selected:
+    if not selected or len(selected) > 100:
         return RedirectResponse("/pos/home", status_code=303)
     with get_conn() as conn:
         cur = conn.cursor()
@@ -2601,25 +2869,13 @@ def create_docket(request: Request, bill_ids: str = Form(...)) -> RedirectRespon
         ).fetchall()
         if len(rows) != len(set(selected)):
             return RedirectResponse("/pos/home?error=Select+only+packed+unassigned+bills", status_code=303)
+        if len(rows) > int(get_setting(cur, "max_bills_per_docket", "30")):
+            raise HTTPException(400, "Docket bill limit exceeded")
         franchise_ids = {r["franchisee_id"] for r in rows}
         fulfillment_modes = {r["fulfillment_mode"] for r in rows}
         if len(franchise_ids) != 1 or len(fulfillment_modes) != 1:
             return RedirectResponse("/pos/home?error=Docket+bills+must+share+one+franchise+and+fulfilment+mode", status_code=303)
-        expected = sum(float(r["expected_weight_kg"] or 0) for r in rows)
-        docket_number = next_code("DCK-", "dockets", "docket_number")
-        cur.execute(
-            """
-            INSERT INTO dockets (docket_number, franchisee_id, outlet_id, status, expected_weight_kg, created_at)
-            VALUES (?, ?, ?, 'DOCKET_CREATED', ?, ?)
-            """,
-            (docket_number, rows[0]["franchisee_id"], rows[0]["outlet_id"], expected, now_str()),
-        )
-        docket_id = cur.lastrowid
-        for row in rows:
-            cur.execute("INSERT INTO docket_bills (docket_id, bill_id) VALUES (?, ?)", (docket_id, row["id"]))
-            cur.execute("UPDATE bills SET status='DOCKET_CREATED', updated_at=? WHERE id=?", (now_str(), row["id"]))
-            add_order_event(cur, row["order_id"], "DOCKET_CREATED", docket_number, user["id"])
-        audit(cur, user, "CREATE", "DOCKET", docket_id, f"{docket_number}: {len(rows)} bills")
+        dispatch_rules.make_docket(cur, rows, user)
         conn.commit()
     return RedirectResponse("/pos/home", status_code=303)
 
@@ -2634,6 +2890,8 @@ def pos_handover(
     if isinstance(user, RedirectResponse):
         return user
     entity_type = entity_type.upper()
+    if entity_type not in {"BILL", "DOCKET"}:
+        raise HTTPException(400, "Invalid dispatch type")
     table = "bills" if entity_type == "BILL" else "dockets"
     with get_conn() as conn:
         cur = conn.cursor()
@@ -2641,15 +2899,18 @@ def pos_handover(
         allowed = row and ((entity_type == "BILL" and row["status"] == "PACKED_INDIVIDUALLY") or (entity_type == "DOCKET" and row["status"] == "DOCKET_CREATED"))
         if not allowed:
             return RedirectResponse("/pos/home?error=Entity+is+not+ready+for+guard", status_code=303)
-        cur.execute(f"UPDATE {table} SET status='AT_GUARD_DESK', updated_at=? WHERE id=?", (now_str(), entity_id))
+        if entity_type == "BILL":
+            entity_type, entity_id = dispatch_rules.prepare_handover(cur, row, user)
+            table = "bills" if entity_type == "BILL" else "dockets"
+        cur.execute(f"UPDATE {table} SET status='HANDED_TO_GUARD', updated_at=? WHERE id=?", (now_str(), entity_id))
         if entity_type == "DOCKET":
-            cur.execute("UPDATE bills SET status='AT_GUARD_DESK', updated_at=? WHERE id IN (SELECT bill_id FROM docket_bills WHERE docket_id=?)", (now_str(), entity_id))
+            cur.execute("UPDATE bills SET status='HANDED_TO_GUARD', updated_at=? WHERE id IN (SELECT bill_id FROM docket_bills WHERE docket_id=?)", (now_str(), entity_id))
         cur.execute(
             "INSERT INTO handover_logs (entity_type, entity_id, from_role, to_role, notes, created_at, from_user_id, handover_mode) VALUES (?, ?, 'POS', 'GUARD', ?, ?, ?, 'MANUAL')",
             (entity_type, entity_id, "Handed over from POS", now_str(), user["id"]),
         )
         for order_id in order_ids_for_entity(cur, entity_type, entity_id):
-            add_order_event(cur, order_id, "AT_GUARD_DESK", "Custody transferred to guard", user["id"])
+            add_order_event(cur, order_id, "HANDED_TO_GUARD", "Awaiting guard receipt scan", user["id"])
         audit(cur, user, "HANDOVER", entity_type, entity_id, "POS to GUARD")
         conn.commit()
     return RedirectResponse("/pos/home", status_code=303)
@@ -2680,7 +2941,7 @@ def guard_home(request: Request):
         bills = conn.execute(
             """SELECT b.*, o.customer_name, o.fulfillment_mode, f.shop_name
                FROM bills b JOIN orders o ON o.id=b.order_id JOIN franchisees f ON f.id=b.franchisee_id
-               WHERE b.outlet_id=? AND b.status IN ('AT_GUARD_DESK','WEIGHT_CHECK_ALERT','WEIGHT_CHECK_PASSED')
+               WHERE b.outlet_id=? AND b.status IN ('AT_GUARD_DESK','WEIGHT_CHECK_ALERT','WEIGHT_CHECK_PASSED','DELIVERY_ASSIGNED')
                  AND b.id NOT IN (SELECT bill_id FROM docket_bills) ORDER BY b.id DESC""", (user["outlet_id"] or 1,)
         ).fetchall()
         dockets = conn.execute(
@@ -2689,14 +2950,28 @@ def guard_home(request: Request):
                FROM dockets d JOIN franchisees f ON f.id=d.franchisee_id
                LEFT JOIN docket_bills db ON db.docket_id=d.id LEFT JOIN bills b ON b.id=db.bill_id
                LEFT JOIN orders o ON o.id=b.order_id
-               WHERE d.outlet_id=? AND d.status IN ('AT_GUARD_DESK','WEIGHT_CHECK_ALERT','WEIGHT_CHECK_PASSED')
+               WHERE d.outlet_id=? AND d.status IN ('AT_GUARD_DESK','WEIGHT_CHECK_ALERT','WEIGHT_CHECK_PASSED','DELIVERY_ASSIGNED')
                GROUP BY d.id ORDER BY d.id DESC""", (user["outlet_id"] or 1,)
+        ).fetchall()
+        incoming = conn.execute(
+            """SELECT 'BILL' entity_type,b.bill_number number,f.shop_name,o.customer_name,1 bill_count,b.created_at
+               FROM bills b JOIN orders o ON o.id=b.order_id JOIN franchisees f ON f.id=b.franchisee_id
+               WHERE b.outlet_id=? AND b.status='HANDED_TO_GUARD' AND b.id NOT IN (SELECT bill_id FROM docket_bills)
+               UNION ALL
+               SELECT 'DOCKET',d.docket_number,f.shop_name,'Grouped dispatch',COUNT(db.bill_id),d.created_at
+               FROM dockets d JOIN franchisees f ON f.id=d.franchisee_id
+               LEFT JOIN docket_bills db ON db.docket_id=d.id
+               WHERE d.outlet_id=? AND d.status='HANDED_TO_GUARD'
+               GROUP BY d.id ORDER BY created_at DESC""", (user["outlet_id"] or 1, user["outlet_id"] or 1)
         ).fetchall()
         tolerance = conn.execute("SELECT value FROM settings WHERE key='weight_tolerance_kg'").fetchone()["value"]
         blocking = get_setting(conn.cursor(), "weight_alert_is_blocking", "0") == "1"
+        require_seal_check = get_setting(conn.cursor(), "require_seal_check", "1") == "1"
     return templates.TemplateResponse(
         "guard_home.html",
-        {"request": request, "user": user, "bills": bills, "dockets": dockets, "tolerance": tolerance, "blocking": blocking},
+        {"request": request, "user": user, "bills": bills, "dockets": dockets, "incoming": incoming,
+         "tolerance": tolerance, "blocking": blocking, "require_seal_check": require_seal_check,
+         "error": request.query_params.get("error", "")},
     )
 
 
@@ -2710,15 +2985,21 @@ def guard_weight_check(
     user = require_role(request, "GUARD")
     if isinstance(user, RedirectResponse):
         return user
+    if entity_type not in {"BILL", "DOCKET"}:
+        raise HTTPException(400, "Invalid dispatch type")
     table = "bills" if entity_type == "BILL" else "dockets"
     with get_conn() as conn:
         cur = conn.cursor()
         row = cur.execute(f"SELECT * FROM {table} WHERE id=? AND outlet_id=?", (entity_id, user["outlet_id"] or 1)).fetchone()
         if not row or row["status"] not in {"AT_GUARD_DESK", "WEIGHT_CHECK_ALERT", "WEIGHT_CHECK_PASSED"}:
             return RedirectResponse("/guard/home", status_code=303)
+        if entity_type == "BILL" and cur.execute("SELECT 1 FROM docket_bills WHERE bill_id=?", (entity_id,)).fetchone():
+            raise HTTPException(409, "Weigh the complete docket, not an individual bill")
+        if not math.isfinite(actual_weight_kg) or actual_weight_kg < 0:
+            raise HTTPException(400, "Weight must be a positive finite value")
         expected = float(row["expected_weight_kg"] or 0)
         variance = round(actual_weight_kg - expected, 3)
-        tolerance = float(get_setting(cur, "weight_tolerance_kg", "0.3"))
+        tolerance = max(float(get_setting(cur, "weight_tolerance_kg", "0.3")), expected * float(get_setting(cur, "weight_tolerance_percent", "0")) / 100)
         check_status = "ALERT" if abs(variance) > tolerance else "PASS"
         state = "WEIGHT_CHECK_ALERT" if check_status == "ALERT" else "WEIGHT_CHECK_PASSED"
         cur.execute(
@@ -2740,11 +3021,14 @@ def guard_handover(
     entity_type: str = Form(...),
     entity_id: int = Form(...),
     target_role: str = Form(...),
+    receiver_code: str = Form(""),
 ) -> RedirectResponse:
     user = require_role(request, "GUARD")
     if isinstance(user, RedirectResponse):
         return user
 
+    if entity_type not in {"BILL", "DOCKET"}:
+        raise HTTPException(400, "Invalid dispatch type")
     table = "bills" if entity_type == "BILL" else "dockets"
     with get_conn() as conn:
         cur = conn.cursor()
@@ -2754,16 +3038,19 @@ def guard_handover(
         blocking = get_setting(cur, "weight_alert_is_blocking", "0") == "1"
         if row["weight_check_status"] == "PENDING" or (blocking and row["weight_check_status"] == "ALERT"):
             return RedirectResponse("/guard/home?error=Weight+check+must+pass+before+handover", status_code=303)
+        if row["seal_status"] == "BROKEN" or (get_setting(cur, "require_seal_check", "1") == "1" and row["seal_status"] != "INTACT"):
+            return RedirectResponse("/guard/home?error=Confirm+an+intact+seal+before+handover", status_code=303)
 
+        operations.validate_release(cur, row, entity_type, target_role, receiver_code, user)
         if target_role == "DELIVERY":
             existing = cur.execute("SELECT 1 FROM delivery_tasks WHERE entity_type=? AND entity_id=? AND status!='DELIVERED'", (entity_type, entity_id)).fetchone()
-            delivery_user = cur.execute("SELECT id FROM users WHERE role='DELIVERY' AND outlet_id=? ORDER BY id LIMIT 1", (user["outlet_id"] or 1,)).fetchone()
+            delivery_user = cur.execute("SELECT id FROM users WHERE role='DELIVERY' AND status='ACTIVE' AND outlet_id=? ORDER BY id LIMIT 1", (user["outlet_id"] or 1,)).fetchone()
             if not existing:
                 cur.execute(
                     "INSERT INTO delivery_tasks (entity_type, entity_id, franchisee_id, status, created_at, assigned_user_id) VALUES (?, ?, ?, 'ASSIGNED', ?, ?)",
                     (entity_type, entity_id, row["franchisee_id"], now_str(), delivery_user["id"] if delivery_user else None),
                 )
-            next_status = "PICKED_BY_DELIVERY"
+            next_status = "DELIVERY_ASSIGNED"
         else:
             next_status = "PICKED_BY_FRANCHISEE"
         cur.execute(f"UPDATE {table} SET status=?, updated_at=? WHERE id=?", (next_status, now_str(), entity_id))
@@ -2802,11 +3089,21 @@ def delivery_home(request: Request):
             LEFT JOIN bills b ON t.entity_type='BILL' AND b.id=t.entity_id
             LEFT JOIN orders o ON o.id=b.order_id
             LEFT JOIN dockets d ON t.entity_type='DOCKET' AND d.id=t.entity_id
-            WHERE t.assigned_user_id IS NULL OR t.assigned_user_id=?
+            WHERE (t.assigned_user_id IS NULL OR t.assigned_user_id=?) AND f.outlet_id=?
             ORDER BY CASE WHEN t.status='DELIVERED' THEN 1 ELSE 0 END, t.id DESC
-            """, (user["id"],)
+            """, (user["id"], user["outlet_id"])
         ).fetchall()
-    return templates.TemplateResponse("delivery_home.html", {"request": request, "user": user, "tasks": tasks})
+        task_ids = [task["id"] for task in tasks]
+        proofs_by_task: dict[int, list[dict[str, Any]]] = {task_id: [] for task_id in task_ids}
+        if task_ids:
+            proofs = conn.execute(
+                f"SELECT id,task_id,kind,created_at FROM proofs WHERE task_id IN ({','.join('?' for _ in task_ids)}) ORDER BY id DESC",
+                task_ids,
+            ).fetchall()
+            for proof in proofs:
+                proofs_by_task[proof["task_id"]].append(dict(proof))
+        tasks = [dict(task) | {"proofs": proofs_by_task[task["id"]]} for task in tasks]
+    return templates.TemplateResponse("delivery_home.html", {"request": request, "user": user, "tasks": tasks, "error": request.query_params.get("error", ""), "message": request.query_params.get("message", "")})
 
 
 @app.post("/delivery/tasks")
@@ -2823,18 +3120,18 @@ def update_delivery_task(
         return user
     with get_conn() as conn:
         cur = conn.cursor()
-        task = cur.execute("SELECT * FROM delivery_tasks WHERE id=? AND (assigned_user_id IS NULL OR assigned_user_id=?)", (task_id, user["id"])).fetchone()
+        task = cur.execute("SELECT t.* FROM delivery_tasks t JOIN franchisees f ON f.id=t.franchisee_id WHERE t.id=? AND (t.assigned_user_id IS NULL OR t.assigned_user_id=?) AND f.outlet_id=?", (task_id, user["id"], user["outlet_id"])).fetchone()
         if not task:
             return RedirectResponse("/delivery/home", status_code=303)
         transitions = {"ASSIGNED": {"ACCEPTED"}, "ACCEPTED": {"PICKED_UP"}, "PICKED_UP": {"OUT_FOR_DELIVERY"}, "OUT_FOR_DELIVERY": {"DELIVERED"}}
         if status not in transitions.get(task["status"], set()):
             return RedirectResponse("/delivery/home?error=Invalid+task+transition", status_code=303)
-        if status == "DELIVERED" and len(pod_reference.strip()) < 4:
-            return RedirectResponse("/delivery/home?error=Enter+delivery+OTP+or+proof+reference", status_code=303)
+        if status == "DELIVERED":
+            operations.verify_completion(cur, task, pod_type, pod_reference, user)
         timestamp_column = {"ACCEPTED": "accepted_at", "PICKED_UP": "picked_at", "DELIVERED": "delivered_at"}.get(status)
         if timestamp_column:
             cur.execute(f"UPDATE delivery_tasks SET status=?, assigned_user_id=?, {timestamp_column}=?, pod_type=?, pod_reference=?, remarks=? WHERE id=?",
-                        (status, user["id"], now_str(), pod_type, pod_reference.strip(), remarks.strip(), task_id))
+                        (status, user["id"], now_str(), pod_type, "VERIFIED_RECEIVER" if status == "DELIVERED" else pod_reference.strip(), remarks.strip(), task_id))
         else:
             cur.execute("UPDATE delivery_tasks SET status=?, assigned_user_id=?, remarks=? WHERE id=?", (status, user["id"], remarks.strip(), task_id))
         if status in {"PICKED_UP", "OUT_FOR_DELIVERY", "DELIVERED"}:
@@ -2849,7 +3146,7 @@ def update_delivery_task(
             complete_entity_orders(cur, task["entity_type"], task["entity_id"], user["id"])
             cur.execute(
                 "INSERT INTO handover_logs (entity_type, entity_id, from_role, to_role, notes, created_at, from_user_id, handover_mode) VALUES (?, ?, 'DELIVERY', 'FRANCHISEE', ?, ?, ?, ?)",
-                (task["entity_type"], task["entity_id"], f"Delivered; {pod_type}: {pod_reference}", now_str(), user["id"], pod_type),
+                (task["entity_type"], task["entity_id"], f"Delivered; {pod_type}; receiver verified", now_str(), user["id"], pod_type),
             )
         audit(cur, user, "TASK_STATUS", "DELIVERY_TASK", task_id, status)
         conn.commit()
@@ -2858,9 +3155,7 @@ def update_delivery_task(
 
 @app.get("/api/summary", response_model=None)
 def summary_api(request: Request):
-    user = current_user(request)
-    if not user:
-        return RedirectResponse("/login", status_code=303)
+    user = operations.require_user(request, {"ADMIN"})
     with get_conn() as conn:
         stats = {
             "orders_executed": conn.execute("SELECT COUNT(1) c FROM orders WHERE status='EXECUTED'").fetchone()["c"],
@@ -2872,6 +3167,23 @@ def summary_api(request: Request):
     return {"user": user["name"], "role": user["role"], "stats": stats}
 
 
+@app.get("/ready")
+def readiness():
+    try:
+        with get_conn() as conn:
+            conn.execute("SELECT 1 FROM settings LIMIT 1").fetchone()
+        return {"status": "ready"}
+    except sqlite3.Error:
+        raise HTTPException(503, "Database unavailable")
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok", "time": now_str()}
+
+
+operations.register(__import__(__name__, fromlist=["app"]))
+
+dispatch_rules.register(__import__(__name__, fromlist=["app"]))
+from app import mobile_api
+mobile_api.register(__import__(__name__, fromlist=["app"]))

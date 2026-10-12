@@ -29,3 +29,16 @@ Thumbs.db
 
 # Vercel local state
 .vercel/
+mobile/node_modules/
+mobile/capacitor.config.json
+mobile/www/runtime-config.js
+output/*.apk
+output/**/*.apk
+mobile/android/.gradle/
+mobile/android/local.properties
+mobile/android/**/build/
+mobile/ios/App/Pods/
+mobile/ios/DerivedData/
+tmp/android-sdk/
+tmp/vercel-proxy/
+tmp/

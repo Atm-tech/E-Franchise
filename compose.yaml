@@ -1,0 +1,32 @@
+services:
+  app:
+    build: .
+    env_file: .env
+    environment:
+      APP_ENV: production
+      SEED_DEMO: "0"
+      E_FRANCHISE_DATA_DIR: /app/data
+    volumes:
+      - app-data:/app/data
+    restart: unless-stopped
+    expose:
+      - "8000"
+  proxy:
+    image: caddy:2-alpine
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:?Set APP_DOMAIN in .env}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      app:
+        condition: service_healthy
+    restart: unless-stopped
+volumes:
+  app-data:
+  caddy-data:
+  caddy-config:

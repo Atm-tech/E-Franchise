@@ -13,7 +13,9 @@
   <link rel="manifest" href="/static/manifest.webmanifest">
   <link rel="icon" href="/static/app-icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/static/app-icon.svg">
-  <link rel="stylesheet" href="/static/style.css?v=11">
+  <link rel="stylesheet" href="/static/style.css?v=14">
+  <link rel="stylesheet" href="/static/vendor/leaflet/leaflet.css?v=1">
+<meta name="csrf-token" content="{{ request.session.get('csrf_token','') }}">
 </head>
 <body class="app-shell role-{{ user.role|lower if user else 'guest' }}">
   {% include "_loader.html" %}
@@ -21,12 +23,18 @@
     <a class="brand" href="/"><span class="brand-mark">A</span><span>Aapoorti <small>PARTNER APP</small></span></a>
     <div class="top-actions">
       <button class="install-app" type="button" hidden>Install app</button>
-      <span class="live-dot"></span>{% if franchise is defined %}<span class="workspace-identity"><b>{{ franchise.shop_name }}</b><small>Franchise</small></span>{% else %}<span class="role-label">{{ user.role|replace('_',' ')|title if user else 'Partner' }}</span>{% endif %}
-      <a class="logout" href="/logout" aria-label="Sign out" title="Sign out"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 17l5-5-5-5M15 12H3M14 3h4a3 3 0 013 3v12a3 3 0 01-3 3h-4"/></svg></a>
+      {% if user %}<a href="/workspace">Operations</a><a href="/account">Account</a><span class="live-dot"></span>{% if franchise is defined %}<span class="workspace-identity"><b>{{ franchise.shop_name }}</b><small>Franchise</small></span>{% else %}<span class="role-label">{{ user.role|replace('_',' ')|title if user else 'Partner' }}</span>{% endif %}
+      <form method="post" action="/logout"><input type="hidden" name="request_key" value="{{ new_request_key() }}"><input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}"><button class="logout" aria-label="Sign out" title="Sign out">Sign out</button></form>{% else %}<a href="/login">Sign in</a>{% endif %}
     </div>
   </header>
   <main class="container {% block mode_class %}{% endblock %}">{% block content %}{% endblock %}</main>
   <div class="offline-pill" role="status" hidden>Offline mode</div>
-  <script src="/static/app-shell.js?v=11" defer></script>
+  <script src="/static/app-shell.js?v=13" defer></script>
+  <script src="/static/live-events.js?v=2" defer></script>
+  <script src="/static/operations.js?v=1" defer></script>
+  <script src="/static/vendor/leaflet/leaflet.js?v=1" defer></script>
+  <script src="/static/vendor/background-geolocation.js?v=1" defer></script>
+  <script src="/static/live-tracking.js?v=2" defer></script>
+  <script src="/static/offline-orders.js?v=1" defer></script>
 </body>
 </html>

@@ -2,7 +2,7 @@
 
 A zero-inventory assisted-commerce platform: local franchise partners take customer orders on mobile, earn commission on every basket, and fulfil through their assigned Aapoorti outlet by pickup or distance-priced delivery.
 
-Role-based web application starter for:
+Role-based web application for:
 - Desktop-first `Admin`
 - Mobile-first `Franchisee`, `Outlet POS`, `Delivery Guard`, `Delivery Man`
 
@@ -34,18 +34,39 @@ Role-based web application starter for:
 - Guard-side weight pass/alert workflow with configurable blocking
 - Delivery acceptance, pickup, trip status, OTP/proof capture, and final order completion
 - Full Admin, Franchisee, POS, Guard, and Delivery mobile/tablet dashboards
+- Role-specific Operations workspaces, POS claims and item scanning, camera-scanner fallback, and printable dispatch labels
+- Guard receipt acknowledgement, verified expiring receiver codes, protected image proof, delivery failure/reassignment/reopening
+- Monthly target administration, delivered-sales rewards, GST supply-state snapshots, and outlet settlement statements
+- Razorpay top-up/webhook/reconciliation adapter, optional Twilio SMS and OSRM driving-route adapters
+- Signed scale/counter HTTP bridge, geofence checks, scoped status polling and explicitly submitted offline order drafts
+- Hashed passwords, CSRF protection, login throttling, credential/session revocation, persistent settings and append-only ledgers
+- Backup/restore scripts and Docker/Caddy deployment configuration
+- Outlet/franchise fulfilment restrictions, fixed/per-km delivery pricing and partner-specific promotions
+- Required/optional/automatic docket policies and audited seal checks before guard release
+- Streaming status updates with safe automatic refresh and polling fallback
+- Revocable role-scoped mobile JWT API and Android/iOS Capacitor preview projects
+- Daily Windows backup task and signed serial scale/counter bridge
+
+## Module Workflows and Handover
+
+- [How to use - role-wise practical guide (Hinglish)](docs/HOW-TO-USE.md)
+- [Complete module workflow (Hinglish)](docs/MODULE-WORKFLOWS.md)
+- [Configuration, providers, device bridge and deployment](docs/DEPLOYMENT.md)
+- [Verification results and limits](docs/VERIFICATION.md)
+
+The browser's **Operations** link opens the work desk for the current role. **Account** changes the password.
+Live payment/SMS/routing credentials, hardware commissioning and public backend deployment are separate activation steps. Bank payouts and verification remain manual. The mobile experience is a PWA with Android/iOS internal preview wrappers; store builds still need bundled assets, release signing and device acceptance.
 
 ## Verification
 
-Run the disposable-database end-to-end lifecycle test:
+Install test dependencies and run the isolated integration suite:
 
 ```powershell
-Copy-Item data/e_franchise.db data/e2e_test.db -Force
-$env:E_FRANCHISE_TEST_DB=(Resolve-Path data/e2e_test.db).Path
-python tests/e2e_flow.py
+python -m pip install -r requirements-dev.txt
+python -m unittest discover -s tests -p "test_*.py" -v
 ```
 
-The test covers admin onboarding/configuration, wallet debit/refund integrity, single-bill delivery with proof, and two-bill docket pickup.
+Tests create fresh temporary databases and mock external providers. They cover lifecycle, financial replay/concurrency, access controls, OTP verification, signed integrations, tax, and backups. `python tests/e2e_flow.py` runs the same suite.
 
 ## Run
 1. Install dependencies:
@@ -85,6 +106,8 @@ $env:R2_PUBLIC_BASE_URL="https://your-public-bucket-domain" # optional
 For local development, E-Franchise also reuses the R2 credentials from the sibling `Sales managment/.env` file when its own environment variables are not set. Set `R2_CONFIG_FILE` to use a different shared credential file. Objects are isolated under the `e-franchise/products/` prefix and are served through the authenticated application when `R2_PUBLIC_BASE_URL` is not configured.
 
 ## Demo Users
+
+Created only for a fresh development database. Existing passwords are preserved on restart. Production disables demo seeding and requires explicit bootstrap credentials; see the deployment guide.
 - Admin: `adm / adm@123`
 - Franchisee: `frn / frn@123`
 - POS: `pos / pos@123`
@@ -94,4 +117,4 @@ For local development, E-Franchise also reuses the R2 credentials from the sibli
 ## Notes
 - Data file: `data/e_franchise.db`
 - Delivery rate, standard charge, and priority charge are configurable from Admin.
-- This remains a demo-grade authentication setup; production deployment needs credential hashing, CSRF protection, API hardening, and proper maps/distance integration.
+- Production activation requires provider/device acceptance testing, an HTTPS host, backup scheduling, and business/security/load review. Implemented safeguards are described in the deployment guide.

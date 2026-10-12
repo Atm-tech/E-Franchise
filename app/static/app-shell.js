@@ -1,7 +1,7 @@
 (() => {
   const loader = document.getElementById('app-loader');
   const loaderStartedAt = performance.now();
-  const minimumLoaderTime = 2200;
+  const minimumLoaderTime = 200;
   let hideScheduled = false;
   const loaderStatus = document.getElementById('loader-status-text');
   const loaderStages = [
