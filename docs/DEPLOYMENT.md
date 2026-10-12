@@ -24,6 +24,8 @@ The last recorded public check was 7 October 2026: the Vercel proxy returned HTT
 
 The Android debug preview was rebuilt on 12 October 2026 with Android SDK platform 36 and the Capacitor 8 background-location plugin. Artifact: `output/apk/Aapoorti-E-Franchise-debug.apk`. It is signed with the debug key and still needs physical-device acceptance. `OSRM_ROUTING_URL` is blank, so the map can show driver/destination and a direct-line fallback, but road route and ETA stay unavailable until an operator configures a routing service.
 
+Commit `26b5f07` was pushed to the connected GitHub `main` branch. Vercel created a production deployment with status `READY`, but its proxy still returns HTTP 502 because the Cloudflare tunnel backend is offline. The proxy build being ready does not mean the FastAPI backend is running.
+
 Revocable mobile JWT endpoints and Android/iOS preview instructions: [mobile/README.md](../mobile/README.md). Bank/SMS activation is deferred. Live payment credentials and acceptance testing remain external requirements.
 
 Daily app usage aur staff training ke liye [How to use](HOW-TO-USE.md) guide dekhein.
