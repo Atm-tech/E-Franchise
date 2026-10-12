@@ -24,6 +24,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 from fastapi import HTTPException
 from app.security import RequestProtection, hash_password, verify_password, session_secret
+from app.database import PostgresConnection
 from app import operations, dispatch_rules
 from app.projections import monthly_projection
 
@@ -73,6 +74,9 @@ def monthly_period(reference: datetime | None = None) -> tuple[str, str, str]:
 
 
 def get_conn() -> sqlite3.Connection:
+    database_url = os.getenv("DATABASE_URL", "").strip()
+    if database_url:
+        return PostgresConnection(database_url)
     class ClosingConnection(sqlite3.Connection):
         def __exit__(self, *args):
             try:
@@ -1358,6 +1362,9 @@ def init_db() -> None:
 
 @app.on_event("startup")
 def on_startup() -> None:
+    if os.getenv("DATABASE_URL", "").strip():
+        init_db()
+        return
     if DB_PATH.exists() and DB_PATH.stat().st_size:
         with closing(sqlite3.connect(DB_PATH)) as existing:
             version = existing.execute("PRAGMA user_version").fetchone()[0]

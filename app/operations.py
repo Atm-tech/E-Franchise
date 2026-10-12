@@ -57,6 +57,22 @@ def migrate(cur):
         CREATE TRIGGER IF NOT EXISTS immutable_earnings_update BEFORE UPDATE ON earnings_wallet_ledger BEGIN SELECT RAISE(ABORT,'Earnings ledger is append-only'); END;
         CREATE TRIGGER IF NOT EXISTS immutable_earnings_delete BEFORE DELETE ON earnings_wallet_ledger BEGIN SELECT RAISE(ABORT,'Earnings ledger is append-only'); END;
     ''')
+    if getattr(cur, 'is_postgres', False):
+        cur.execute("""CREATE OR REPLACE FUNCTION reject_immutable_ledger_change() RETURNS trigger
+                     LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'Wallet ledger is append-only'; END $$""")
+        for table in ('wallet_ledger', 'earnings_wallet_ledger'):
+            for operation in ('UPDATE', 'DELETE'):
+                trigger = f'block_{table}_{operation.lower()}'
+                cur.execute(f'DROP TRIGGER IF EXISTS {trigger} ON {table}')
+                cur.execute(f'CREATE TRIGGER {trigger} BEFORE {operation} ON {table} FOR EACH ROW EXECUTE FUNCTION reject_immutable_ledger_change()')
+        cur.execute("""CREATE OR REPLACE FUNCTION record_setting_version() RETURNS trigger
+                     LANGUAGE plpgsql AS $$ BEGIN
+                     IF OLD.value IS DISTINCT FROM NEW.value THEN
+                       INSERT INTO config_versions(setting_key, old_value, new_value, changed_at)
+                       VALUES(NEW.key, OLD.value, NEW.value, CURRENT_TIMESTAMP::text);
+                     END IF; RETURN NEW; END $$""")
+        cur.execute('DROP TRIGGER IF EXISTS record_setting_version ON settings')
+        cur.execute('CREATE TRIGGER record_setting_version AFTER UPDATE ON settings FOR EACH ROW EXECUTE FUNCTION record_setting_version()')
     cur.execute('BEGIN IMMEDIATE')
     cur.execute('UPDATE orders SET wallet_required=total WHERE wallet_required IS NULL')
     cur.execute('UPDATE orders SET delivery_cost=delivery_charge WHERE delivery_cost IS NULL')

@@ -21,7 +21,7 @@ Role-based web application for:
 - Guard weight check with tolerance-based `PASS/ALERT`
 - Guard handover to franchise pickup or delivery task
 - Delivery task status updates to `DELIVERED`
-- SQLite persistence
+- SQLite persistence for local development; PostgreSQL with an isolated `e_franchise` schema for the Render deployment
 - Cloudflare R2 product picture uploads and catalogue images
 - Installable mobile/tablet PWA shell with standalone display and safe-area support
 - Franchise banking profile, outlet mapping, activation controls, and staff role management
