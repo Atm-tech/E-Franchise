@@ -2578,7 +2578,7 @@ def franchise_home(request: Request, period: str = "month", date_from: str = "",
                    o.customer_name, o.order_number,
                    (SELECT t.status FROM delivery_tasks t WHERE t.entity_type='BILL' AND t.entity_id=b.id ORDER BY t.id DESC LIMIT 1) task_status,
                    1 order_count, o.fulfillment_mode,
-                   EXISTS(SELECT 1 FROM docket_bills db WHERE db.bill_id=b.id) is_grouped,
+                   CASE WHEN EXISTS(SELECT 1 FROM docket_bills db WHERE db.bill_id=b.id) THEN 1 ELSE 0 END is_grouped,
                    (SELECT t.id FROM delivery_tasks t WHERE t.entity_type='BILL' AND t.entity_id=b.id ORDER BY t.id DESC LIMIT 1) task_id
             FROM bills b JOIN orders o ON o.id=b.order_id WHERE b.franchisee_id=?
             UNION ALL
@@ -3156,7 +3156,7 @@ def pos_home(request: Request):
                    group_concat(b.bill_number, ', ') bill_numbers
             FROM dockets d JOIN franchisees f ON f.id=d.franchisee_id
             LEFT JOIN docket_bills db ON db.docket_id=d.id LEFT JOIN bills b ON b.id=db.bill_id
-            WHERE d.outlet_id=? GROUP BY d.id ORDER BY d.id DESC LIMIT 30
+            WHERE d.outlet_id=? GROUP BY d.id, f.shop_name ORDER BY d.id DESC LIMIT 30
             """, (user["outlet_id"] or 1,)
         ).fetchall()
         outlet = conn.execute("SELECT * FROM outlets WHERE id=?", (user["outlet_id"] or 1,)).fetchone()
@@ -3295,7 +3295,7 @@ def guard_home(request: Request):
                LEFT JOIN docket_bills db ON db.docket_id=d.id LEFT JOIN bills b ON b.id=db.bill_id
                LEFT JOIN orders o ON o.id=b.order_id
                WHERE d.outlet_id=? AND d.status IN ('AT_GUARD_DESK','WEIGHT_CHECK_ALERT','WEIGHT_CHECK_PASSED','DELIVERY_ASSIGNED')
-               GROUP BY d.id ORDER BY d.id DESC""", (user["outlet_id"] or 1,)
+               GROUP BY d.id, f.shop_name ORDER BY d.id DESC""", (user["outlet_id"] or 1,)
         ).fetchall()
         incoming = conn.execute(
             """SELECT 'BILL' entity_type,b.bill_number number,f.shop_name,o.customer_name,1 bill_count,b.created_at AS created_at
@@ -3306,7 +3306,7 @@ def guard_home(request: Request):
                FROM dockets d JOIN franchisees f ON f.id=d.franchisee_id
                LEFT JOIN docket_bills db ON db.docket_id=d.id
                WHERE d.outlet_id=? AND d.status='HANDED_TO_GUARD'
-               GROUP BY d.id ORDER BY created_at DESC""", (user["outlet_id"] or 1, user["outlet_id"] or 1)
+               GROUP BY d.id, f.shop_name ORDER BY created_at DESC""", (user["outlet_id"] or 1, user["outlet_id"] or 1)
         ).fetchall()
         tolerance = conn.execute("SELECT value FROM settings WHERE key='weight_tolerance_kg'").fetchone()["value"]
         blocking = get_setting(conn.cursor(), "weight_alert_is_blocking", "0") == "1"
