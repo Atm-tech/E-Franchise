@@ -1,6 +1,6 @@
 # Aapoorti E-Franchise
 
-A zero-inventory assisted-commerce platform: local franchise partners take customer orders on mobile, earn commission on every basket, and fulfil through their assigned Aapoorti outlet by pickup or distance-priced delivery.
+An assisted-commerce platform: local franchise partners take customer orders on mobile, earn commission on every basket, and fulfil through their assigned Aapoorti outlet by pickup or distance-priced delivery. Outlet stock is recorded as packs/units, reserved on order confirmation, and deducted at POS billing.
 
 Role-based web application for:
 - Desktop-first `Admin`
@@ -25,9 +25,9 @@ Role-based web application for:
 - Cloudflare R2 product picture uploads and catalogue images
 - Installable mobile/tablet PWA shell with standalone display and safe-area support
 - Franchise banking profile, outlet mapping, activation controls, and staff role management
-- Advance capture with configurable wallet allocation and immutable wallet ledger
+- Cash deposits credited 1:1 to purchase wallet, with immutable ledger
 - Manual wallet credit/debit, low-balance settings, held-order execution, cancellation refunds, and audit logs
-- Product and department commission rules with product-priority resolution
+- Product and department commission rules with product-priority resolution; fulfilled-order commission credits to transferable earnings wallet
 - Date-based product or department promotions with fixed/percentage discounts
 - Configurable free-delivery threshold/quota, per-km pricing, and delivery charge ownership
 - Individual bill packing, same-franchise docket validation, and complete custody tracking
@@ -49,6 +49,7 @@ Role-based web application for:
 
 ## Module Workflows and Handover
 
+- [Product roadmap and planned features](docs/ROADMAP.md)
 - [How to use - role-wise practical guide (Hinglish)](docs/HOW-TO-USE.md)
 - [Complete module workflow (Hinglish)](docs/MODULE-WORKFLOWS.md)
 - [Configuration, providers, device bridge and deployment](docs/DEPLOYMENT.md)

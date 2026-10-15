@@ -6,8 +6,8 @@
     sessionStorage.removeItem('aapoorti-live-view');
     try {
       const saved = JSON.parse(savedView);
-      if (saved.path === location.pathname && saved.view && typeof window.showView === 'function') window.showView(saved.view);
-      if (saved.path === location.pathname) window.scrollTo(0, saved.scroll);
+      if (saved.url === location.pathname + location.search + location.hash && saved.view && typeof window.showView === 'function') window.showView(saved.view);
+      if (saved.url === location.pathname + location.search + location.hash) window.scrollTo(0, saved.scroll);
     } catch { /* Ignore old view state. */ }
   }
   document.addEventListener('input', () => { dirty = true; }, true);
@@ -21,7 +21,7 @@
     if (data.initial || !initialized) { initialized = true; return; }
     if (!data.events.length) return;
     if (safeToRefresh()) {
-      sessionStorage.setItem('aapoorti-live-view', JSON.stringify({path:location.pathname,view:document.querySelector('.app-view.active')?.id,scroll:scrollY}));
+      sessionStorage.setItem('aapoorti-live-view', JSON.stringify({url:location.pathname + location.search + location.hash,view:document.querySelector('.app-view.active')?.id,scroll:scrollY}));
       location.reload(); return;
     }
     let notice = document.getElementById('event-notice');

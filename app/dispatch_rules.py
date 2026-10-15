@@ -122,7 +122,9 @@ def seal_check(request: Request, entity_type: str = Form(...), entity_id: int = 
         if entity_type == 'BILL' and cur.execute('SELECT 1 FROM docket_bills WHERE bill_id=?', (entity_id,)).fetchone():
             raise HTTPException(409, 'Check the complete docket')
         table = 'bills' if entity_type == 'BILL' else 'dockets'
-        cur.execute(f'UPDATE {table} SET seal_status=?,seal_notes=?,seal_checked_by=?,seal_checked_at=? WHERE id=?', (seal_status, notes.strip(), user['id'], a.now_str(), entity_id))
+        cur.execute(f"UPDATE {table} SET seal_status=?,seal_notes=?,seal_checked_by=?,seal_checked_at=? WHERE id=? AND seal_status='PENDING' AND seal_checked_at IS NULL", (seal_status, notes.strip(), user['id'], a.now_str(), entity_id))
+        if cur.rowcount != 1:
+            raise HTTPException(409, 'Seal inspection already recorded; it cannot be changed')
         if entity_type == 'DOCKET':
             cur.execute(
                 "UPDATE bills SET seal_status=?,seal_notes=?,seal_checked_by=?,seal_checked_at=? WHERE id IN (SELECT bill_id FROM docket_bills WHERE docket_id=?)",

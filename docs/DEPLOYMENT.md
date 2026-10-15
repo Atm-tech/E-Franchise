@@ -20,6 +20,12 @@ The default serial regex accepts only `ST <weight> kg`. Set `--pattern` to the m
 
 ### Hosting and mobile API
 
+### Current development phase: local backend
+
+Use the local FastAPI backend and its SQLite database while building and accepting the core workflows. No Render application service is required in this phase. Start it from the repository root with `python -m uvicorn app.main:app --reload --port 8000` and open `http://127.0.0.1:8000/login`. Keep `DATABASE_URL` unset for this local run; the app uses `data/e_franchise.db`. Do not use the demo database for production data.
+
+At the final deployment stage, deploy E-Franchise from its own Git repository as its own web service, and point it at the already-existing Render PostgreSQL instance with `E_FRANCHISE_DB_SCHEMA=e_franchise`. This reuses the database service only; it does not replace or combine the B2B application. Do not create a new database or attach a service disk for this setup. The database URL and production credentials must be entered in Render's Environment settings, not committed to Git.
+
 On 12 October 2026, the production backend was prepared to reuse the existing Render PostgreSQL service `aapoorti-db` (database `aapoorti_b2b`, Ohio). The database already contains other Aapoorti tables, so E-Franchise uses its own `e_franchise` schema; the existing database role has permission to create that schema. Create the backend directly from the Render Dashboard at [New Web Service](https://dashboard.render.com/web/new): choose GitHub repo `Atm-tech/E-Franchise`, branch `main`, Docker runtime/Dockerfile, Ohio region, plan `0.5c-512mb`, and health check `/ready`. Do not attach a disk or create another database. Add `DATABASE_URL` using the **Internal Database URL** from `aapoorti-db` → Connect, plus `E_FRANCHISE_DB_SCHEMA=e_franchise`, `APP_ENV=production`, `SEED_DEMO=0`, a random `SESSION_SECRET` (32+ characters), `BOOTSTRAP_ADMIN_LOGIN=admin`, and a unique `BOOTSTRAP_ADMIN_PASSWORD` (12+ characters). Keep the database URL and passwords in Render Environment only; never commit or paste them into chat. The E-Franchise PostgreSQL adapter creates its own tables on first startup; it does not import local SQLite development data. Existing local backup/restore scripts are SQLite-only and are not PostgreSQL backup tooling.
 
 The last recorded public check was 7 October 2026: the Vercel proxy returned HTTP 200 for `/login` while forwarding to a temporary Cloudflare tunnel hosted from this PC. This is not always-on hosting; the tunnel can change or stop. On 12 October, Vercel MCP project requests returned HTTP 403, but the project-local Vercel CLI credential successfully inspected the project. The Vercel project is already connected to GitHub repository `Atm-tech/E-Franchise`, production branch `main`; the CLI confirms it is connected. Its root directory is `deploy/vercel`, so Git deployments publish the static proxy only, not the FastAPI backend. The current proxy points at the temporary tunnel, which returned HTTP 502 on 12 October. Docker/Caddy remains the prepared independent-host option for the backend.
@@ -139,3 +145,12 @@ Schedule backup execution in your host's task scheduler/cron. Also back up proof
 - Supplier tax identity/rates/place-of-supply/accounting review; no statutory filing/e-invoice integration is claimed.
 - Backups and recovery on the deployment host, expected-concurrency load test, and independent security review.
 - Separate native Android/iOS builds if app-store distribution is required; this release delivers the PWA.
+
+
+## Automatic profit credit worker
+
+The backend starts a profit worker automatically. It checks persisted due dates immediately on startup and every 60 seconds, credits eligible profit after return adjustments, and marks each order released in the same transaction. Missed credits are processed after restart. Failures roll back and retry on the next check.
+
+Keep the backend running continuously; a sleeping or stopped host cannot run background checks. `PROFIT_CHECK_INTERVAL_SECONDS` changes the interval (minimum 1 second). `PROFIT_WORKER_ENABLED=0` disables the worker. Test environments disable it automatically. SQLite uses its existing write transaction; PostgreSQL release checks use a transaction advisory lock to serialize checks across processes. No extra database or queue is required.
+
+For local flow testing, run `python scripts/profit_credit_mode.py immediate`. This credits existing eligible completed orders immediately and new completed orders at completion. Restore normal per-order due dates with `python scripts/profit_credit_mode.py delayed`. Both modes retain the worker. Already credited profits remain credited; switching modes never reverses credits. Immediate mode is disabled for production and remote databases.

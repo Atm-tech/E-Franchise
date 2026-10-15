@@ -181,6 +181,79 @@ class OperationsTests(unittest.TestCase):
         for _ in range(2):self.post(f'/admin/orders/{held["id"]}/status',{'status':'CANCELLED','reason':'Duplicate cancellation test'})
         self.assertEqual(self.row("SELECT COUNT(*) FROM wallet_ledger WHERE reference_id=? AND entry_type='ORDER_REFUND'",(held['id'],))[0],1)
 
+    def test_instant_demo_topup_is_scoped_and_replay_safe(self):
+        self.login('frn')
+        before = self.row('SELECT wallet_balance FROM franchisees WHERE id=?', (self.fid,))[0]
+        body = {'amount': 500, 'request_key': 'instant-demo-topup-123456'}
+        for _ in range(2):
+            response = self.post('/franchise/demo-topups', body)
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()['wallet_balance'], before + 500)
+        self.assertEqual(self.row("SELECT COUNT(*) FROM wallet_ledger WHERE entry_type='TEST_CREDIT'")[0], 1)
+        for amount in (0, -1, 100001, 'nan'):
+            self.assertEqual(self.post('/franchise/demo-topups', {'amount': amount}).status_code, 400)
+        with patch.dict(os.environ, {'APP_ENV': 'production'}):
+            self.assertEqual(self.post('/franchise/demo-topups', body).status_code, 403)
+        with patch.dict(os.environ, {'DATABASE_URL': 'postgresql://remote'}):
+            self.assertEqual(self.post('/franchise/demo-topups', body).status_code, 403)
+        self.sql("UPDATE settings SET value='0' WHERE key='test_wallet_topup_enabled'")
+        self.assertEqual(self.post('/franchise/demo-topups', body).status_code, 403)
+        self.login('pos')
+        self.assertIn(self.post('/franchise/demo-topups', body).status_code, (303, 401, 403))
+
+    def test_background_profit_credit_and_restart_replay(self):
+        from app.profit_worker import ProfitWorker
+        import threading
+        outlet = self.row('SELECT outlet_id FROM franchisees WHERE id=?',(self.fid,))[0]
+        self.sql("INSERT INTO inventory_balances(outlet_id,product_id,on_hand,reserved,updated_at) VALUES(?,?,20,0,?) ON CONFLICT(outlet_id,product_id) DO UPDATE SET on_hand=20,reserved=0",(outlet,self.product['id'],m.now_str()))
+        due=self.order(mode='FRANCHISE_PICKUP',status='ON_HOLD')
+        future=self.order(mode='FRANCHISE_PICKUP',status='ON_HOLD')
+        self.sql("UPDATE orders SET status='DELIVERED',commission_total=100,commission_available_at='2000-01-01 00:00:00' WHERE id=?",(due['id'],))
+        self.sql("UPDATE orders SET status='DELIVERED',commission_total=200,commission_available_at='2099-01-01 00:00:00' WHERE id=?",(future['id'],))
+        finished=threading.Event()
+        def release():
+            count=m.credit_due_profits()
+            finished.set()
+            return count
+        worker=ProfitWorker(release,.05)
+        worker.start()
+        try:self.assertTrue(finished.wait(3))
+        finally:worker.stop()
+        self.assertFalse(worker.thread.is_alive())
+        self.assertEqual(m.credit_due_profits(),0)
+        self.assertEqual(self.row("SELECT COUNT(*),SUM(amount) FROM earnings_wallet_ledger WHERE entry_type='ORDER_COMMISSION'" )[:],(1,100))
+        self.assertIsNone(self.row('SELECT commission_released_at FROM orders WHERE id=?',(future['id'],))[0])
+        self.sql("INSERT INTO settings(key,value) VALUES('profit_credit_mode','immediate') ON CONFLICT(key) DO UPDATE SET value='immediate'")
+        self.assertEqual(m.credit_due_profits(),1)
+        self.assertEqual(m.credit_due_profits(),0)
+        self.assertEqual(self.row("SELECT SUM(amount) FROM earnings_wallet_ledger WHERE entry_type='ORDER_COMMISSION'")[0],300)
+        self.sql("UPDATE settings SET value='delayed' WHERE key='profit_credit_mode'")
+        self.assertEqual(m.credit_due_profits(),0)
+
+
+    def test_redirect_message_preserves_query_and_fragment(self):
+        from urllib.parse import urlsplit,parse_qs
+        response = ops.redirect('Stock saved', '/admin/dashboard?period=month#catalog')
+        parts = urlsplit(response.headers['location'])
+        self.assertEqual(parts.fragment,'catalog')
+        self.assertEqual(parse_qs(parts.query),{'period':['month'],'message':['Stock saved']})
+        self.assertEqual(ops.redirect('Picked','/pos/home#queue').headers['location'],'/pos/home?message=Picked#queue')
+
+    def test_billing_consumes_inventory_once(self):
+        outlet = self.row('SELECT outlet_id FROM franchisees WHERE id=?', (self.fid,))[0]
+        self.sql("INSERT INTO inventory_balances(outlet_id,product_id,on_hand,reserved,updated_at) VALUES(?,?,20,0,?) ON CONFLICT(outlet_id,product_id) DO UPDATE SET on_hand=20,reserved=0", (outlet,self.product['id'],m.now_str()))
+        order = self.order(mode='FRANCHISE_PICKUP')
+        self.login('pos')
+        self.assertEqual(self.post(f'/pos/orders/{order["id"]}/claim').status_code,303)
+        self.assertEqual(self.post(f'/pos/orders/{order["id"]}/scan',{'sku':self.product['sku_code'],'qty':1}).status_code,303)
+        for _ in range(2):
+            self.assertEqual(self.post('/pos/bills',{'order_id':order['id']}).status_code,303)
+        self.assertEqual(self.row('SELECT COUNT(*) FROM bills WHERE order_id=?',(order['id'],))[0],1)
+        stock = self.row('SELECT on_hand,reserved FROM inventory_balances WHERE outlet_id=? AND product_id=?',(outlet,self.product['id']))
+        self.assertEqual(tuple(stock),(19,0))
+        sale = self.row("SELECT COUNT(*),SUM(quantity_delta),SUM(reserved_delta) FROM inventory_movements WHERE reference=? AND kind='SALE'",(f'ORDER:{order["id"]}',))
+        self.assertEqual(tuple(sale),(1,-1,-1))
+
     def test_payment_signature_duplicates_amount_and_reconciliation(self):
         self.login('frn')
         env={'RAZORPAY_KEY_ID':'test_key','RAZORPAY_KEY_SECRET':'test_secret','RAZORPAY_WEBHOOK_SECRET':'webhook_test_secret'}
@@ -190,6 +263,17 @@ class OperationsTests(unittest.TestCase):
             self.assertEqual(self.post('/franchise/topups',body).status_code,303)
             self.assertEqual(self.row('SELECT COUNT(*) FROM payment_transactions')[0],1)
             self.assertEqual(self.client.get('/franchise/payments/1').status_code,200)
+            status = self.client.get('/franchise/payments/1', headers={'Accept': 'application/json'})
+            self.assertEqual(status.status_code, 200)
+            self.assertEqual(status.json()['order_id'], 'order_test123')
+            self.assertEqual(status.json()['status'], 'PENDING')
+            self.assertNotIn('test_secret', status.text)
+            self.assertEqual(status.headers['cache-control'], 'no-store')
+            page = self.client.get('/franchise/home')
+            self.assertEqual(page.status_code, 200)
+            self.assertIn('id="wallet-topup"', page.text)
+            self.assertIn('id="topup-amount"', page.text)
+
             def send(amount,event_id='event123',signature=True):
                 payload={'event':'payment.captured','payload':{'payment':{'entity':{'id':'pay_test123','order_id':'order_test123','status':'captured','amount':amount,'currency':'INR'}}}}
                 raw=json.dumps(payload).encode();digest=hmac.new(env['RAZORPAY_WEBHOOK_SECRET'].encode(),raw,hashlib.sha256).hexdigest()
@@ -202,6 +286,12 @@ class OperationsTests(unittest.TestCase):
             self.assertEqual(send(10000,'event456').status_code,200)
             self.assertEqual(self.row('SELECT wallet_balance FROM franchisees WHERE id=?',(self.fid,))[0],before+100)
             self.assertEqual(self.row("SELECT COUNT(*) FROM wallet_ledger WHERE entry_type='TOPUP'")[0],1)
+            status = self.client.get('/franchise/payments/1', headers={'Accept': 'application/json'}).json()
+            self.assertEqual(status['status'], 'CREDITED')
+            self.assertEqual(status['wallet_balance'], before + 100)
+            self.sql('UPDATE payment_transactions SET franchisee_id=? WHERE id=1', (self.fid + 999,))
+            self.assertEqual(self.client.get('/franchise/payments/1', headers={'Accept': 'application/json'}).status_code, 404)
+
 
     def test_dispatch_failure_reassignment_geofence_and_proof(self):
         order,bill,task=self.delivery_task()

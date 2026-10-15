@@ -36,7 +36,7 @@
 <nav class="function-tray function-tray-three" aria-label="Delivery functions"><button type="button" class="active" data-delivery-filter="active"><span>●</span>Active</button><button type="button" data-delivery-filter="all"><span>▦</span>All</button><button type="button" data-delivery-filter="completed"><span>✓</span>Completed</button></nav>
 <script>
 const deliveryButtons=document.querySelectorAll('[data-delivery-filter]');
-function filterDeliveries(filter,button){deliveryButtons.forEach(item=>item.classList.toggle('active',item===button));document.querySelectorAll('[data-delivery-state]').forEach(card=>card.hidden=filter!=='all'&&card.dataset.deliveryState!==filter)}
-deliveryButtons.forEach(button=>button.addEventListener('click',()=>{filterDeliveries(button.dataset.deliveryFilter,button);window.scrollTo({top:0,behavior:'smooth'})}));filterDeliveries('active',deliveryButtons[0]);
+function filterDeliveries(filter,button){sessionStorage.setItem('aapoorti-delivery-filter-{{ user.id }}',filter);deliveryButtons.forEach(item=>item.classList.toggle('active',item===button));document.querySelectorAll('[data-delivery-state]').forEach(card=>card.hidden=filter!=='all'&&card.dataset.deliveryState!==filter)}
+deliveryButtons.forEach(button=>button.addEventListener('click',()=>{filterDeliveries(button.dataset.deliveryFilter,button);window.scrollTo({top:0,behavior:'smooth'})}));const savedDeliveryFilter=sessionStorage.getItem('aapoorti-delivery-filter-{{ user.id }}')||'active';const savedDeliveryButton=Array.from(deliveryButtons).find(button=>button.dataset.deliveryFilter===savedDeliveryFilter)||deliveryButtons[0];filterDeliveries(savedDeliveryButton.dataset.deliveryFilter,savedDeliveryButton);
 </script>
 {% endblock %}

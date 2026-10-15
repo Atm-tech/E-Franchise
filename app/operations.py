@@ -10,7 +10,7 @@ import sqlite3
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlsplit, urlunsplit
 from uuid import uuid4
 
 from fastapi import Form, File, HTTPException, Request, UploadFile
@@ -23,11 +23,16 @@ a = None
 
 
 def migrate(cur):
+    cur.execute("""CREATE TABLE IF NOT EXISTS franchise_customer_profiles (
+        franchisee_id INTEGER NOT NULL REFERENCES franchisees(id), phone TEXT NOT NULL,
+        name TEXT NOT NULL, notes TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL,
+        PRIMARY KEY(franchisee_id,phone))""")
     columns = {
+        'franchise_customer_profiles': {'address': "TEXT NOT NULL DEFAULT ''"},
         'users': {'status': "TEXT NOT NULL DEFAULT 'ACTIVE'", 'auth_version': 'INTEGER NOT NULL DEFAULT 1'},
         'franchisees': {'state_code': "TEXT NOT NULL DEFAULT '23'", 'latitude': 'REAL', 'longitude': 'REAL', 'route_distance_km': 'REAL', 'route_outlet_id': 'INTEGER'},
         'outlets': {'latitude': 'REAL', 'longitude': 'REAL'},
-        'orders': {'request_key': 'TEXT', 'supply_state_code': "TEXT NOT NULL DEFAULT '23'", 'supplier_state_code': "TEXT NOT NULL DEFAULT '23'", 'wallet_required': 'REAL', 'delivery_cost': 'REAL', 'delivery_charge_bearer': "TEXT NOT NULL DEFAULT 'CUSTOMER'"},
+        'orders': {'buyer_address': "TEXT NOT NULL DEFAULT ''", 'request_key': 'TEXT', 'supply_state_code': "TEXT NOT NULL DEFAULT '23'", 'supplier_state_code': "TEXT NOT NULL DEFAULT '23'", 'wallet_required': 'REAL', 'delivery_cost': 'REAL', 'delivery_charge_bearer': "TEXT NOT NULL DEFAULT 'CUSTOMER'", 'return_window_days': 'INTEGER NOT NULL DEFAULT 4', 'delivered_at': 'TEXT', 'commission_available_at': 'TEXT', 'commission_released_at': 'TEXT'},
         'commission_rules': {'starts_on': 'TEXT', 'ends_on': 'TEXT'},
         'delivery_tasks': {'failed_from': 'TEXT', 'failure_reason': 'TEXT', 'latitude': 'REAL', 'longitude': 'REAL', 'location_at': 'TEXT'},
         'payment_transactions': {'payment_id': 'TEXT', 'verified_at': 'TEXT'},
@@ -47,11 +52,19 @@ def migrate(cur):
         CREATE TABLE IF NOT EXISTS proofs(id INTEGER PRIMARY KEY, task_id INTEGER NOT NULL, path TEXT NOT NULL, mime TEXT NOT NULL, kind TEXT NOT NULL, created_by INTEGER, created_at TEXT);
         CREATE TABLE IF NOT EXISTS settlements(id INTEGER PRIMARY KEY, outlet_id INTEGER NOT NULL, total REAL NOT NULL, status TEXT NOT NULL DEFAULT 'PENDING', payment_reference TEXT, created_by INTEGER, created_at TEXT, paid_at TEXT);
         CREATE TABLE IF NOT EXISTS settlement_orders(settlement_id INTEGER NOT NULL, order_id INTEGER NOT NULL UNIQUE, amount REAL NOT NULL);
+        CREATE TABLE IF NOT EXISTS order_returns(id INTEGER PRIMARY KEY, order_id INTEGER NOT NULL, order_item_id INTEGER NOT NULL, quantity INTEGER NOT NULL, commission_reversed REAL NOT NULL, reason TEXT NOT NULL, created_by INTEGER, created_at TEXT NOT NULL);
+        CREATE INDEX IF NOT EXISTS idx_order_returns_order_item ON order_returns(order_item_id,id);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_order_commission_credit ON earnings_wallet_ledger(franchisee_id,reference_id) WHERE reference_type='ORDER_COMMISSION';
         CREATE TABLE IF NOT EXISTS config_versions(id INTEGER PRIMARY KEY, setting_key TEXT NOT NULL, old_value TEXT, new_value TEXT, changed_at TEXT NOT NULL);
         CREATE TRIGGER IF NOT EXISTS record_setting_version AFTER UPDATE ON settings WHEN OLD.value != NEW.value BEGIN
             INSERT INTO config_versions(setting_key, old_value, new_value, changed_at) VALUES(NEW.key, OLD.value, NEW.value, datetime('now'));
         END;
         CREATE TABLE IF NOT EXISTS device_readings(id INTEGER PRIMARY KEY, device_id TEXT NOT NULL, request_id TEXT NOT NULL UNIQUE, outlet_id INTEGER NOT NULL, entity_type TEXT NOT NULL, entity_id INTEGER NOT NULL, weight_kg REAL, item_count INTEGER, created_at TEXT NOT NULL, applied_at TEXT);
+        CREATE TABLE IF NOT EXISTS inventory_balances(outlet_id INTEGER NOT NULL, product_id INTEGER NOT NULL, on_hand INTEGER NOT NULL DEFAULT 0 CHECK(on_hand>=0), reserved INTEGER NOT NULL DEFAULT 0 CHECK(reserved>=0 AND reserved<=on_hand), updated_at TEXT NOT NULL, PRIMARY KEY(outlet_id,product_id));
+        CREATE TABLE IF NOT EXISTS inventory_movements(id INTEGER PRIMARY KEY, outlet_id INTEGER NOT NULL, product_id INTEGER NOT NULL, kind TEXT NOT NULL, quantity_delta INTEGER NOT NULL, reserved_delta INTEGER NOT NULL DEFAULT 0, reference TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '', created_by INTEGER, created_at TEXT NOT NULL);
+        CREATE INDEX IF NOT EXISTS idx_inventory_movement_product ON inventory_movements(outlet_id,product_id,id DESC);
+        CREATE TRIGGER IF NOT EXISTS immutable_inventory_update BEFORE UPDATE ON inventory_movements BEGIN SELECT RAISE(ABORT,'Inventory ledger is append-only'); END;
+        CREATE TRIGGER IF NOT EXISTS immutable_inventory_delete BEFORE DELETE ON inventory_movements BEGIN SELECT RAISE(ABORT,'Inventory ledger is append-only'); END;
         CREATE TRIGGER IF NOT EXISTS immutable_wallet_update BEFORE UPDATE ON wallet_ledger BEGIN SELECT RAISE(ABORT,'Wallet ledger is append-only'); END;
         CREATE TRIGGER IF NOT EXISTS immutable_wallet_delete BEFORE DELETE ON wallet_ledger BEGIN SELECT RAISE(ABORT,'Wallet ledger is append-only'); END;
         CREATE TRIGGER IF NOT EXISTS immutable_earnings_update BEFORE UPDATE ON earnings_wallet_ledger BEGIN SELECT RAISE(ABORT,'Earnings ledger is append-only'); END;
@@ -65,6 +78,10 @@ def migrate(cur):
                 trigger = f'block_{table}_{operation.lower()}'
                 cur.execute(f'DROP TRIGGER IF EXISTS {trigger} ON {table}')
                 cur.execute(f'CREATE TRIGGER {trigger} BEFORE {operation} ON {table} FOR EACH ROW EXECUTE FUNCTION reject_immutable_ledger_change()')
+        for operation in ('UPDATE', 'DELETE'):
+            trigger = f'block_inventory_movements_{operation.lower()}'
+            cur.execute(f'DROP TRIGGER IF EXISTS {trigger} ON inventory_movements')
+            cur.execute(f'CREATE TRIGGER {trigger} BEFORE {operation} ON inventory_movements FOR EACH ROW EXECUTE FUNCTION reject_immutable_ledger_change()')
         cur.execute("""CREATE OR REPLACE FUNCTION record_setting_version() RETURNS trigger
                      LANGUAGE plpgsql AS $$ BEGIN
                      IF OLD.value IS DISTINCT FROM NEW.value THEN
@@ -77,7 +94,7 @@ def migrate(cur):
     cur.execute('UPDATE orders SET wallet_required=total WHERE wallet_required IS NULL')
     cur.execute('UPDATE orders SET delivery_cost=delivery_charge WHERE delivery_cost IS NULL')
     cur.execute('PRAGMA user_version=2')
-    for key, value in {'require_picking': '1', 'geofence_radius_m': '0', 'max_bills_per_docket': '30', 'weight_tolerance_percent': '0'}.items():
+    for key, value in {'require_picking': '1', 'geofence_radius_m': '0', 'max_bills_per_docket': '30', 'weight_tolerance_percent': '0', 'customer_return_window_days': '4'}.items():
         cur.execute('INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)', (key, value))
 
 
@@ -97,7 +114,9 @@ def claim_mutation(cur,user,action,key):
 
 
 def redirect(message, target='/workspace'):
-    return RedirectResponse(target + '?message=' + quote_plus(message), status_code=303)
+    parts = urlsplit(target)
+    query = (parts.query + '&' if parts.query else '') + 'message=' + quote_plus(message)
+    return RedirectResponse(urlunsplit((parts.scheme, parts.netloc, parts.path, query, parts.fragment)), status_code=303)
 
 
 def positive(value, allow_zero=False):
@@ -124,6 +143,95 @@ def require_picked(cur, order, user):
     missing = cur.execute('SELECT 1 FROM order_items oi LEFT JOIN picked_items p ON p.order_item_id=oi.id WHERE oi.order_id=? AND COALESCE(p.qty,0)!=oi.qty', (order['id'],)).fetchone()
     if missing:
         raise HTTPException(409, 'Scan and pick every ordered item before billing')
+
+
+def reserve_order_inventory(cur, order_id, outlet_id, user_id):
+    items = cur.execute('SELECT product_id, SUM(qty) qty FROM order_items WHERE order_id=? GROUP BY product_id', (order_id,)).fetchall()
+    billed = cur.execute("SELECT 1 FROM inventory_movements WHERE reference=? AND kind='SALE' LIMIT 1", (f'ORDER:{order_id}',)).fetchone()
+    if billed:
+        return
+    for item in items:
+        balance = cur.execute('SELECT on_hand,reserved FROM inventory_balances WHERE outlet_id=? AND product_id=?', (outlet_id,item['product_id'])).fetchone()
+        # ON_HOLD rows have no reservation yet; an existing reservation is
+        # reusable when an execution is retried after its database commit.
+        reserved = int(balance['reserved']) if balance else 0
+        available = int(balance['on_hand']-reserved) if balance else 0
+        existing_reservation = cur.execute("SELECT COALESCE(SUM(reserved_delta),0) qty FROM inventory_movements WHERE outlet_id=? AND product_id=? AND reference=? AND kind='RESERVE'", (outlet_id,item['product_id'],f'ORDER:{order_id}')).fetchone()['qty']
+        existing_release = cur.execute("SELECT COALESCE(SUM(-reserved_delta),0) qty FROM inventory_movements WHERE outlet_id=? AND product_id=? AND reference=? AND kind='RELEASE'", (outlet_id,item['product_id'],f'ORDER:{order_id}')).fetchone()['qty']
+        sales = cur.execute("SELECT COALESCE(SUM(-quantity_delta),0) qty FROM inventory_movements WHERE outlet_id=? AND product_id=? AND reference=? AND kind='SALE'", (outlet_id,item['product_id'],f'ORDER:{order_id}')).fetchone()['qty']
+        outstanding = max(0, int(item['qty'])-int(sales))
+        if outstanding == 0:
+            continue
+        need_to_reserve = max(0, outstanding - int(existing_reservation) + int(existing_release))
+        if balance and int(balance['reserved']) >= int(item['qty'])-int(sales) and int(existing_reservation)>int(existing_release):
+            need_to_reserve = 0
+        if need_to_reserve > available:
+            product = cur.execute('SELECT product_name FROM products WHERE id=?',(item['product_id'],)).fetchone()
+            raise HTTPException(409, f"Not enough stock for {product['product_name'] if product else 'product'}: {available} available")
+    for item in items:
+        balance = cur.execute('SELECT reserved FROM inventory_balances WHERE outlet_id=? AND product_id=?', (outlet_id,item['product_id'])).fetchone()
+        existing_reservation = int(cur.execute("SELECT COALESCE(SUM(reserved_delta),0) qty FROM inventory_movements WHERE outlet_id=? AND product_id=? AND reference=? AND kind='RESERVE'", (outlet_id,item['product_id'],f'ORDER:{order_id}')).fetchone()['qty'])
+        existing_release = int(cur.execute("SELECT COALESCE(SUM(-reserved_delta),0) qty FROM inventory_movements WHERE outlet_id=? AND product_id=? AND reference=? AND kind='RELEASE'", (outlet_id,item['product_id'],f'ORDER:{order_id}')).fetchone()['qty'])
+        sales = int(cur.execute("SELECT COALESCE(SUM(-quantity_delta),0) qty FROM inventory_movements WHERE outlet_id=? AND product_id=? AND reference=? AND kind='SALE'", (outlet_id,item['product_id'],f'ORDER:{order_id}')).fetchone()['qty'])
+        if sales >= int(item['qty']):
+            continue
+        delta = max(0, int(item['qty'])-sales - existing_reservation + existing_release)
+        if balance and int(balance['reserved']) >= int(item['qty'])-sales and existing_reservation>existing_release:
+            continue
+        if delta:
+            cur.execute('UPDATE inventory_balances SET reserved=reserved+?,updated_at=? WHERE outlet_id=? AND product_id=?', (delta, a.now_str(), outlet_id,item['product_id']))
+            cur.execute("INSERT INTO inventory_movements(outlet_id,product_id,kind,quantity_delta,reserved_delta,reference,reason,created_by,created_at) VALUES(?,?,'RESERVE',0,?,?,?, ?,?)", (outlet_id,item['product_id'],delta,f'ORDER:{order_id}','Order confirmed',user_id,a.now_str()))
+
+
+def release_order_inventory(cur, order_id, outlet_id, user_id, reason):
+    items = cur.execute('SELECT product_id,SUM(qty) qty FROM order_items WHERE order_id=? GROUP BY product_id',(order_id,)).fetchall()
+    for item in items:
+        released = int(cur.execute("SELECT COALESCE(SUM(-reserved_delta),0) qty FROM inventory_movements WHERE outlet_id=? AND product_id=? AND reference=? AND kind='RELEASE'",(outlet_id,item['product_id'],f'ORDER:{order_id}')).fetchone()['qty'])
+        reserved_by_order = int(cur.execute("SELECT COALESCE(SUM(reserved_delta),0) qty FROM inventory_movements WHERE outlet_id=? AND product_id=? AND reference=? AND kind='RESERVE'",(outlet_id,item['product_id'],f'ORDER:{order_id}')).fetchone()['qty'])
+        already_sold = int(cur.execute("SELECT COALESCE(SUM(-quantity_delta),0) qty FROM inventory_movements WHERE outlet_id=? AND product_id=? AND reference=? AND kind='SALE'",(outlet_id,item['product_id'],f'ORDER:{order_id}')).fetchone()['qty'])
+        release_qty = max(0,min(int(item['qty'])-already_sold-released,reserved_by_order-released))
+        if not release_qty:
+            continue
+        balance = cur.execute('SELECT reserved FROM inventory_balances WHERE outlet_id=? AND product_id=?',(outlet_id,item['product_id'])).fetchone()
+        if not balance or int(balance['reserved']) < release_qty:
+            raise HTTPException(409,'Inventory reservation is inconsistent; review inventory movements before cancelling')
+        cur.execute('UPDATE inventory_balances SET reserved=reserved-?,updated_at=? WHERE outlet_id=? AND product_id=?',(release_qty,a.now_str(),outlet_id,item['product_id']))
+        cur.execute("INSERT INTO inventory_movements(outlet_id,product_id,kind,quantity_delta,reserved_delta,reference,reason,created_by,created_at) VALUES(?,?,'RELEASE',0,?,?,?, ?,?)",(outlet_id,item['product_id'],-release_qty,f'ORDER:{order_id}',reason,user_id,a.now_str()))
+
+
+def consume_order_inventory(cur, order_id, outlet_id, user_id):
+    items = cur.execute('SELECT product_id,SUM(qty) qty FROM order_items WHERE order_id=? GROUP BY product_id',(order_id,)).fetchall()
+    for item in items:
+        already_sold = int(cur.execute("SELECT COALESCE(SUM(-quantity_delta),0) qty FROM inventory_movements WHERE outlet_id=? AND product_id=? AND reference=? AND kind='SALE'",(outlet_id,item['product_id'],f'ORDER:{order_id}')).fetchone()['qty'])
+        if already_sold >= int(item['qty']):
+            continue
+        balance=cur.execute('SELECT on_hand,reserved FROM inventory_balances WHERE outlet_id=? AND product_id=?',(outlet_id,item['product_id'])).fetchone()
+        outstanding = int(item['qty'])-already_sold
+        if not balance or int(balance['reserved'])<outstanding or int(balance['on_hand'])<outstanding:
+            raise HTTPException(409,'Reserved stock is inconsistent; cannot bill this order')
+    for item in items:
+        already_sold = int(cur.execute("SELECT COALESCE(SUM(-quantity_delta),0) qty FROM inventory_movements WHERE outlet_id=? AND product_id=? AND reference=? AND kind='SALE'",(outlet_id,item['product_id'],f'ORDER:{order_id}')).fetchone()['qty'])
+        outstanding = int(item['qty'])-already_sold
+        if outstanding <= 0:
+            continue
+        cur.execute('UPDATE inventory_balances SET on_hand=on_hand-?,reserved=reserved-?,updated_at=? WHERE outlet_id=? AND product_id=?',(outstanding,outstanding,a.now_str(),outlet_id,item['product_id']))
+        cur.execute("INSERT INTO inventory_movements(outlet_id,product_id,kind,quantity_delta,reserved_delta,reference,reason,created_by,created_at) VALUES(?,?,'SALE',?,?,?,'Billed order',?,?)",(outlet_id,item['product_id'],-outstanding,-outstanding,f'ORDER:{order_id}',user_id,a.now_str()))
+
+
+def receive_inventory(request: Request, outlet_id: int = Form(...), product_id: int = Form(...), quantity: int = Form(...), reference: str = Form(''), reason: str = Form(''), request_key: str = Form(...)):
+    user = require_user(request, {'ADMIN'})
+    if quantity <= 0 or quantity > 1000000 or len(reason.strip()) < 3:
+        raise HTTPException(400, 'Enter a positive quantity and a short reason')
+    with a.get_conn() as conn:
+        cur=conn.cursor()
+        if not claim_mutation(cur,user,'INVENTORY_RECEIPT',request_key):
+            return redirect('This stock receipt was already recorded.', '/admin/dashboard#catalog')
+        if not cur.execute('SELECT 1 FROM outlets WHERE id=? AND status=\'ACTIVE\'',(outlet_id,)).fetchone() or not cur.execute('SELECT 1 FROM products WHERE id=? AND status=\'ACTIVE\'',(product_id,)).fetchone():
+            raise HTTPException(404,'Choose an active outlet and product')
+        cur.execute('INSERT INTO inventory_balances(outlet_id,product_id,on_hand,reserved,updated_at) VALUES(?,?,?,0,?) ON CONFLICT(outlet_id,product_id) DO UPDATE SET on_hand=inventory_balances.on_hand+excluded.on_hand,updated_at=excluded.updated_at',(outlet_id,product_id,quantity,a.now_str()))
+        cur.execute("INSERT INTO inventory_movements(outlet_id,product_id,kind,quantity_delta,reserved_delta,reference,reason,created_by,created_at) VALUES(?,?,'RECEIPT',?,0,?,?,?,?)",(outlet_id,product_id,quantity,reference.strip() or request_key,reason.strip(),user['id'],a.now_str()))
+        a.audit(cur,user,'STOCK_RECEIVED','PRODUCT',product_id,f'outlet={outlet_id}; quantity={quantity}; reference={reference.strip()}')
+    return redirect('Stock received and logged.', '/admin/dashboard#catalog')
 
 
 def otp_digest(value):
@@ -266,13 +374,13 @@ def claim_order(request: Request, order_id: int):
         cur = conn.cursor()
         order = cur.execute("SELECT * FROM orders WHERE id=? AND outlet_id=? AND status='EXECUTED' AND id NOT IN (SELECT order_id FROM bills)", (order_id,user['outlet_id'])).fetchone()
         if not order:
-            return RedirectResponse('/pos/home?error=Order+is+no+longer+available', status_code=303)
+            return RedirectResponse('/pos/home?error=Order+is+no+longer+available#queue', status_code=303)
         lease=cur.execute('SELECT * FROM pick_sessions WHERE order_id=?',(order_id,)).fetchone()
         if lease and lease['user_id'] != user['id'] and lease['expires_at'] > time.time():
-            return RedirectResponse('/pos/home?error=Another+POS+operator+is+picking+this+order', status_code=303)
+            return RedirectResponse('/pos/home?error=Another+POS+operator+is+picking+this+order#queue', status_code=303)
         cur.execute('INSERT INTO pick_sessions VALUES(?,?,?) ON CONFLICT(order_id) DO UPDATE SET user_id=excluded.user_id,expires_at=excluded.expires_at',(order_id,user['id'],time.time()+900))
         a.audit(cur,user,'CLAIM','ORDER',order_id)
-    return redirect('Order claimed for 15 minutes. Each scan renews the claim.', '/pos/home')
+    return redirect('Order claimed for 15 minutes. Each scan renews the claim.', '/pos/home#queue')
 
 
 def scan_item(request: Request, order_id: int, sku: str = Form(...), qty: int = Form(1), item_id: int | None = Form(None)):
@@ -281,15 +389,15 @@ def scan_item(request: Request, order_id: int, sku: str = Form(...), qty: int = 
         cur=conn.cursor()
         lease=cur.execute("SELECT p.* FROM pick_sessions p JOIN orders o ON o.id=p.order_id WHERE p.order_id=? AND o.outlet_id=? AND o.status='EXECUTED' AND o.id NOT IN (SELECT order_id FROM bills)",(order_id,user['outlet_id'])).fetchone()
         if not lease or lease['user_id'] != user['id'] or lease['expires_at'] < time.time():
-            return RedirectResponse('/pos/home?error=Claim+this+order+before+scanning', status_code=303)
+            return RedirectResponse('/pos/home?error=Claim+this+order+before+scanning#queue', status_code=303)
         rows=cur.execute('SELECT oi.*,COALESCE(pi.qty,0) picked FROM order_items oi JOIN products p ON p.id=oi.product_id LEFT JOIN picked_items pi ON pi.order_item_id=oi.id WHERE oi.order_id=? AND p.sku_code=?',(order_id,sku.strip())).fetchall()
         row=next((r for r in rows if r['id']==item_id),None) if item_id else next((r for r in rows if r['picked']<r['qty']),None)
         if not row or qty < 1 or row['picked']+qty>row['qty']:
-            return RedirectResponse('/pos/home?error=SKU+not+ordered+or+quantity+exceeds+the+order', status_code=303)
+            return RedirectResponse('/pos/home?error=SKU+not+ordered+or+quantity+exceeds+the+order#queue', status_code=303)
         cur.execute('INSERT INTO picked_items VALUES(?,?,?,?) ON CONFLICT(order_item_id) DO UPDATE SET qty=excluded.qty,user_id=excluded.user_id,updated_at=excluded.updated_at',(row['id'],row['picked']+qty,user['id'],a.now_str()))
         cur.execute('UPDATE pick_sessions SET expires_at=? WHERE order_id=?',(time.time()+900,order_id))
         a.audit(cur,user,'SCAN','ORDER',order_id,f'{sku}: +{qty}')
-    return redirect('Item picked', '/pos/home')
+    return redirect('Item picked', '/pos/home#queue')
 
 
 def dispatch_label(request: Request, kind: str, entity_id: int):
@@ -347,6 +455,8 @@ def issue_code(request: Request, purpose: str = Form(...), channel: str = Form('
         cur.execute("UPDATE otp_challenges SET status='REPLACED' WHERE franchisee_id=? AND purpose=? AND status='PENDING'",(user['franchisee_id'],purpose))
         expiry=(datetime.now(a.IST)+timedelta(minutes=5)).strftime('%Y-%m-%d %H:%M:%S')
         cur.execute('INSERT INTO otp_challenges(user_id,franchisee_id,phone_e164,purpose,provider,otp_hash,expires_at,created_at) VALUES(?,?,?,?,?,?,?,?)',(user['id'],user['franchisee_id'],phone,purpose,channel,otp_digest(code),expiry,a.now_str()))
+    if 'application/json' in request.headers.get('accept', ''):
+        return JSONResponse({'code': code if channel == 'APP' else None, 'purpose': purpose, 'expiry': expiry}, headers={'Cache-Control': 'no-store'})
     return a.templates.TemplateResponse('handover_code.html',{'request':request,'user':user,'code':code if channel=='APP' else None,'purpose':purpose,'expiry':expiry})
 
 
@@ -389,13 +499,13 @@ def validate_dates(start,end):
     except ValueError: raise HTTPException(400,'Invalid effective date range')
 
 
-def operational_settings(request: Request, require_picking: int = Form(1), geofence_radius_m: float = Form(0), max_bills_per_docket: int = Form(30), weight_tolerance_percent: float = Form(0), wallet_credit_percent: float = Form(75)):
+def operational_settings(request: Request, require_picking: int = Form(1), geofence_radius_m: float = Form(0), max_bills_per_docket: int = Form(30), weight_tolerance_percent: float = Form(0), wallet_credit_percent: float = Form(100), customer_return_window_days: int = Form(4)):
     user=require_user(request,{'ADMIN'})
-    if require_picking not in (0,1) or not 1<=max_bills_per_docket<=100 or not math.isfinite(wallet_credit_percent) or not 0<=wallet_credit_percent<=100 or not math.isfinite(weight_tolerance_percent) or not 0<=weight_tolerance_percent<=100 or not math.isfinite(geofence_radius_m) or not 0<=geofence_radius_m<=10000:
+    if require_picking not in (0,1) or not 1<=max_bills_per_docket<=100 or not 1<=customer_return_window_days<=30 or not math.isfinite(wallet_credit_percent) or not 0<=wallet_credit_percent<=100 or not math.isfinite(weight_tolerance_percent) or not 0<=weight_tolerance_percent<=100 or not math.isfinite(geofence_radius_m) or not 0<=geofence_radius_m<=10000:
         raise HTTPException(400,'Invalid operational settings')
     with a.get_conn() as conn:
         cur=conn.cursor()
-        for key,value in {'require_picking':require_picking,'geofence_radius_m':geofence_radius_m,'max_bills_per_docket':max_bills_per_docket,'weight_tolerance_percent':weight_tolerance_percent,'wallet_credit_percent':wallet_credit_percent}.items():
+        for key,value in {'require_picking':require_picking,'geofence_radius_m':geofence_radius_m,'max_bills_per_docket':max_bills_per_docket,'weight_tolerance_percent':weight_tolerance_percent,'wallet_credit_percent':100,'customer_return_window_days':customer_return_window_days}.items():
             a.upsert_setting(cur,key,str(value))
         a.audit(cur,user,'CONFIGURE','OPERATIONS',None)
     return redirect('Operational settings saved with change history')
@@ -530,6 +640,12 @@ def topup_page(request: Request, transaction_id: int):
     with a.get_conn() as conn:
         row=conn.execute('SELECT * FROM payment_transactions WHERE id=? AND franchisee_id=?',(transaction_id,user['franchisee_id'])).fetchone()
     if not row: raise HTTPException(404,'Payment not found')
+    if 'application/json' in request.headers.get('accept', ''):
+        with a.get_conn() as conn:
+            balance = conn.execute('SELECT wallet_balance FROM franchisees WHERE id=?', (user['franchisee_id'],)).fetchone()['wallet_balance']
+        return JSONResponse({'id': row['id'], 'status': row['status'], 'amount': row['amount_paise'],
+                             'order_id': row['provider_reference'], 'key': os.getenv('RAZORPAY_KEY_ID', ''),
+                             'wallet_balance': balance, 'message': row['failure_message'] or ''}, headers={'Cache-Control': 'no-store'})
     return a.templates.TemplateResponse('payment.html',{'request':request,'user':user,'payment':row,'key_id':os.getenv('RAZORPAY_KEY_ID','')})
 
 
@@ -797,6 +913,7 @@ def event_feed(request: Request, after: int = 0):
 
 
 ROUTES = [
+    ('/admin/inventory/receive','POST',receive_inventory),
     ('/workspace','GET',workspace),('/account','GET',account),('/account/password','POST',password_change),
     ('/pos/orders/{order_id}/claim','POST',claim_order),('/pos/orders/{order_id}/scan','POST',scan_item),
     ('/dispatch/{kind}/{entity_id}/label.pdf','GET',dispatch_label),('/franchise/dispatch-code','POST',issue_code),

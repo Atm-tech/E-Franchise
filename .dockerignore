@@ -9,3 +9,6 @@ tests
 docs
 .venv
 node_modules
+
+b2b-app
+output

@@ -175,6 +175,40 @@ def earnings_wallet_entry(
     return balance
 
 
+def immediate_profit_credit_enabled(cur):
+    return os.getenv('APP_ENV', '').lower() != 'production' and not os.getenv('DATABASE_URL', '').strip() and get_setting(cur, 'profit_credit_mode', 'delayed') == 'immediate'
+
+
+def release_matured_commissions(cur: sqlite3.Cursor, franchisee_id: int | None = None) -> int:
+    if os.getenv("DATABASE_URL", "").strip():
+        cur.execute("SELECT pg_advisory_xact_lock(72419041)")
+    """Move commissions past their order-specific return window into spendable earnings."""
+    params: list[Any] = [now_str(), int(immediate_profit_credit_enabled(cur))]
+    filter_sql = ""
+    if franchisee_id is not None:
+        filter_sql = " AND o.franchisee_id=?"
+        params.append(franchisee_id)
+    orders = cur.execute(
+        """SELECT o.id, o.franchisee_id, o.commission_total FROM orders o
+           WHERE o.status='DELIVERED' AND o.commission_released_at IS NULL
+             AND o.commission_available_at IS NOT NULL AND (o.commission_available_at<=? OR ?=1)""" + filter_sql,
+        params,
+    ).fetchall()
+    for order in orders:
+        reversed_row = cur.execute(
+            "SELECT COALESCE(SUM(commission_reversed),0) amount FROM order_returns WHERE order_id=?",
+            (order["id"],),
+        ).fetchone()
+        amount = round(max(0, float(order["commission_total"] or 0) - float(reversed_row["amount"] or 0)), 2)
+        if amount > 0:
+            earnings_wallet_entry(
+                cur, order["franchisee_id"], "ORDER_COMMISSION", amount, "ORDER_COMMISSION", order["id"],
+                "Profit credited immediately in local test mode" if immediate_profit_credit_enabled(cur) else "Profit credited after customer return window", None,
+            )
+        cur.execute("UPDATE orders SET commission_released_at=? WHERE id=? AND commission_released_at IS NULL", (now_str(), order["id"]))
+    return len(orders)
+
+
 def add_order_event(cur: sqlite3.Cursor, order_id: int, status: str, notes: str, user_id: int | None) -> None:
     cur.execute(
         "INSERT INTO order_events (order_id, status, notes, created_by, created_at) VALUES (?, ?, ?, ?, ?)",
@@ -461,8 +495,9 @@ def report_period(period: str, date_from: str = "", date_to: str = "") -> tuple[
 def franchise_summary(cur: sqlite3.Cursor, franchisee_id: int, start: str, end: str, label: str) -> dict[str, Any]:
     sales_time = "COALESCE(NULLIF(executed_at,''),created_at)"
     metrics = cur.execute(
-        f"""SELECT COUNT(1) orders, COUNT(DISTINCT NULLIF(customer_phone,'')) customers,
-                   COALESCE(SUM(item_subtotal),0) sales, COALESCE(SUM(commission_total),0) commission,
+            f"""SELECT COUNT(1) orders, COUNT(DISTINCT NULLIF(customer_phone,'')) customers,
+                   COALESCE(SUM(item_subtotal),0) sales,
+                   COALESCE(SUM(CASE WHEN status='DELIVERED' THEN commission_total ELSE 0 END),0) commission,
                    COALESCE(SUM(delivery_charge),0) delivery
             FROM orders WHERE franchisee_id=? AND {sales_time}>=? AND {sales_time}<?
               AND status NOT IN ('ON_HOLD','CANCELLED')""", (franchisee_id, start, end),
@@ -482,7 +517,7 @@ def franchise_summary(cur: sqlite3.Cursor, franchisee_id: int, start: str, end: 
     target_rewards = cur.execute(
         """SELECT COALESCE(SUM(CASE WHEN amount>0 THEN amount ELSE 0 END),0) rewards,
                   COALESCE(SUM(CASE WHEN amount<0 THEN -amount ELSE 0 END),0) transferred
-           FROM earnings_wallet_ledger WHERE franchisee_id=? AND created_at>=? AND created_at<?""", (franchisee_id, start, end),
+           FROM earnings_wallet_ledger WHERE franchisee_id=? AND entry_type='TARGET_REWARD' AND created_at>=? AND created_at<?""", (franchisee_id, start, end),
     ).fetchone()
     tax_rows = cur.execute(
         """SELECT oi.gst_rate, ROUND(SUM(oi.taxable_value),2) taxable, ROUND(SUM(oi.gst_amount),2) tax,
@@ -559,8 +594,17 @@ def complete_entity_orders(cur: sqlite3.Cursor, entity_type: str, entity_id: int
     for order_id in order_ids_for_entity(cur, entity_type, entity_id):
         cur.execute("UPDATE orders SET status='DELIVERED', updated_at=? WHERE id=?", (now_str(), order_id))
         add_order_event(cur, order_id, "DELIVERED", "Fulfilment completed", user_id)
-        fid = cur.execute("SELECT franchisee_id FROM orders WHERE id=?", (order_id,)).fetchone()[0]
+        order = cur.execute("SELECT franchisee_id, return_window_days FROM orders WHERE id=?", (order_id,)).fetchone()
+        fid = order["franchisee_id"]
+        delivered_at = now_str()
+        available_at = (datetime.strptime(delivered_at, "%Y-%m-%d %H:%M:%S") + timedelta(days=int(order["return_window_days"] or 4))).strftime("%Y-%m-%d %H:%M:%S")
+        cur.execute(
+            "UPDATE orders SET delivered_at=?, commission_available_at=?, updated_at=? WHERE id=?",
+            (delivered_at, available_at, delivered_at, order_id),
+        )
         refresh_target_progress(cur, fid, user_id)
+        if immediate_profit_credit_enabled(cur):
+            release_matured_commissions(cur, fid)
 
 
 def read_env_file(path: Path) -> dict[str, str]:
@@ -1129,6 +1173,7 @@ def init_db() -> None:
         dispatch_rules.migrate(cur)
 
         # Seed defaults without overwriting saved configuration.
+        upsert_setting(cur, "wallet_credit_percent", "100")
         cur.execute("INSERT OR IGNORE INTO settings (key,value) VALUES (?,?)", ("wallet_credit_percent", "75"))
         cur.execute("INSERT OR IGNORE INTO settings (key,value) VALUES (?,?)", ("instant_premium_charge", "40"))
         cur.execute("INSERT OR IGNORE INTO settings (key,value) VALUES (?,?)", ("day_delivery_charge", "10"))
@@ -1376,6 +1421,30 @@ def on_startup() -> None:
     init_db()
 
 # Database initialization runs only inside the application lifecycle.
+
+
+def credit_due_profits():
+    with get_conn() as conn:
+        return release_matured_commissions(conn.cursor())
+
+
+@app.on_event("startup")
+def start_profit_worker():
+    from app.profit_worker import ProfitWorker
+    app.state.profit_worker = None
+    if os.getenv("APP_ENV") == "test" or os.getenv("PROFIT_WORKER_ENABLED", "1") == "0":
+        return
+    interval = max(1, float(os.getenv("PROFIT_CHECK_INTERVAL_SECONDS", "60")))
+    worker = ProfitWorker(credit_due_profits, interval)
+    app.state.profit_worker = worker
+    worker.start()
+
+
+@app.on_event("shutdown")
+def stop_profit_worker():
+    worker = getattr(app.state, "profit_worker", None)
+    if worker:
+        worker.stop()
 
 
 def current_user(request: Request) -> dict[str, Any] | None:
@@ -1685,6 +1754,8 @@ def admin_dashboard(request: Request, message: str | None = None, error: str | N
         return user
 
     with get_conn() as conn:
+        release_matured_commissions(conn.cursor())
+        conn.commit()
         stats = {
             "franchisees": conn.execute("SELECT COUNT(1) c FROM franchisees").fetchone()["c"],
             "products": conn.execute("SELECT COUNT(1) c FROM products WHERE status='ACTIVE'").fetchone()["c"],
@@ -1702,9 +1773,24 @@ def admin_dashboard(request: Request, message: str | None = None, error: str | N
                ORDER BY f.id DESC LIMIT 8"""
         ).fetchall()
         products = conn.execute("SELECT * FROM products WHERE status='ACTIVE' ORDER BY id DESC LIMIT 8").fetchall()
+        inventory = conn.execute("SELECT ib.*,p.sku_code,p.product_name,o.code outlet_code FROM inventory_balances ib JOIN products p ON p.id=ib.product_id JOIN outlets o ON o.id=ib.outlet_id ORDER BY p.product_name,o.code LIMIT 150").fetchall()
+        inventory_movements = conn.execute("SELECT im.*,p.sku_code,p.product_name,o.code outlet_code FROM inventory_movements im JOIN products p ON p.id=im.product_id JOIN outlets o ON o.id=im.outlet_id ORDER BY im.id DESC LIMIT 50").fetchall()
         orders = conn.execute(
             "SELECT o.*, f.shop_name FROM orders o JOIN franchisees f ON f.id=o.franchisee_id ORDER BY o.id DESC LIMIT 20"
         ).fetchall()
+        orders = [dict(row) | {"return_window_open": bool(row["commission_available_at"] and row["commission_available_at"] > now_str() and not row["commission_released_at"])} for row in orders]
+        order_return_items: dict[int, list[dict[str, Any]]] = {}
+        return_items = conn.execute(
+            """SELECT oi.id, oi.order_id, COALESCE(NULLIF(oi.product_name_snapshot,''),p.product_name) product_name,
+                      oi.qty, oi.line_commission, COALESCE(r.returned_qty,0) returned_qty
+               FROM order_items oi LEFT JOIN products p ON p.id=oi.product_id
+               LEFT JOIN (SELECT order_item_id,SUM(quantity) returned_qty FROM order_returns GROUP BY order_item_id) r
+                 ON r.order_item_id=oi.id ORDER BY oi.id"""
+        ).fetchall()
+        for item in return_items:
+            row = dict(item)
+            row["returnable_qty"] = int(row["qty"]) - int(row["returned_qty"])
+            order_return_items.setdefault(int(row["order_id"]), []).append(row)
         wallet_ledger = conn.execute(
             "SELECT wl.*, f.shop_name FROM wallet_ledger wl JOIN franchisees f ON f.id=wl.franchisee_id ORDER BY wl.id DESC LIMIT 20"
         ).fetchall()
@@ -1745,7 +1831,10 @@ def admin_dashboard(request: Request, message: str | None = None, error: str | N
             "stats": stats,
             "franchisees": franchisees,
             "products": products,
+            "inventory": inventory,
+            "inventory_movements": inventory_movements,
             "orders": orders,
+            "order_return_items": order_return_items,
             "wallet_ledger": wallet_ledger,
             "outlets": outlets,
             "staff": staff,
@@ -1792,7 +1881,7 @@ def create_franchisee(
             raise HTTPException(400, "Choose an active outlet")
         if cur.execute("SELECT 1 FROM users WHERE phone=?", (mobile.strip(),)).fetchone():
             raise HTTPException(409, "Login ID already exists")
-        pct = float(get_setting(cur, "wallet_credit_percent", "75"))
+        pct = 100.0
         wallet_credit = advance_amount * pct / 100.0
         cur.execute(
             """
@@ -1817,7 +1906,7 @@ def create_franchisee(
         )
         audit(cur, user, "CREATE", "FRANCHISEE", fid, f"Onboarded {shop_name}")
         conn.commit()
-    return RedirectResponse("/admin/dashboard?message=Franchisee+created", status_code=303)
+    return RedirectResponse("/admin/dashboard?message=Franchisee+created#franchisees", status_code=303)
 
 
 @app.post("/admin/products")
@@ -1875,8 +1964,8 @@ def create_product(
             )
             conn.commit()
     except ValueError as exc:
-        return RedirectResponse(f"/admin/dashboard?error={quote_plus(str(exc))}", status_code=303)
-    return RedirectResponse("/admin/dashboard?message=Product+saved", status_code=303)
+        return RedirectResponse(f"/admin/dashboard?error={quote_plus(str(exc))}#catalog", status_code=303)
+    return RedirectResponse("/admin/dashboard?message=Product+saved#catalog", status_code=303)
 
 
 @app.post("/admin/products/image")
@@ -1893,7 +1982,7 @@ def upload_existing_product_image(
     with get_conn() as conn:
         product = conn.execute("SELECT id FROM products WHERE sku_code=?", (sku_code,)).fetchone()
     if not product:
-        return RedirectResponse("/admin/dashboard?error=Product+SKU+not+found", status_code=303)
+        return RedirectResponse("/admin/dashboard?error=Product+SKU+not+found#catalog", status_code=303)
 
     try:
         image_url = upload_product_image(image, sku_code)
@@ -1901,9 +1990,9 @@ def upload_existing_product_image(
             conn.execute("UPDATE products SET image_url=? WHERE id=?", (image_url, product["id"]))
             conn.commit()
     except ValueError as exc:
-        return RedirectResponse(f"/admin/dashboard?error={quote_plus(str(exc))}", status_code=303)
+        return RedirectResponse(f"/admin/dashboard?error={quote_plus(str(exc))}#catalog", status_code=303)
 
-    return RedirectResponse("/admin/dashboard?message=Product+picture+uploaded", status_code=303)
+    return RedirectResponse("/admin/dashboard?message=Product+picture+uploaded#catalog", status_code=303)
 
 
 @app.post("/admin/products/import")
@@ -1925,11 +2014,11 @@ def import_products(request: Request, file: UploadFile = File(...)) -> RedirectR
                     raise ValueError(f"Row {index}: {exc}") from exc
             conn.commit()
     except ValueError as exc:
-        return RedirectResponse(f"/admin/dashboard?error={quote_plus(str(exc))}", status_code=303)
+        return RedirectResponse(f"/admin/dashboard?error={quote_plus(str(exc))}#catalog", status_code=303)
     except Exception:
-        return RedirectResponse("/admin/dashboard?error=Could+not+import+the+file", status_code=303)
+        return RedirectResponse("/admin/dashboard?error=Could+not+import+the+file#catalog", status_code=303)
 
-    return RedirectResponse(f"/admin/dashboard?message=Imported+{len(rows)}+products", status_code=303)
+    return RedirectResponse(f"/admin/dashboard?message=Imported+{len(rows)}+products#catalog", status_code=303)
 
 
 @app.post("/admin/settings")
@@ -1964,9 +2053,9 @@ def update_settings(
     gstin = business_gstin.strip().upper() if business_gstin is not None else None
     state_code = business_state_code.strip() if business_state_code is not None else None
     if gstin and (len(gstin) != 15 or not gstin.isalnum()):
-        return RedirectResponse("/admin/dashboard?error=GSTIN+must+be+15+letters+and+digits", status_code=303)
+        return RedirectResponse("/admin/dashboard?error=GSTIN+must+be+15+letters+and+digits#rules", status_code=303)
     if state_code is not None and (len(state_code) != 2 or not state_code.isdigit()):
-        return RedirectResponse("/admin/dashboard?error=GST+state+code+must+be+2+digits", status_code=303)
+        return RedirectResponse("/admin/dashboard?error=GST+state+code+must+be+2+digits#rules", status_code=303)
     with get_conn() as conn:
         cur = conn.cursor()
         upsert_setting(cur, "instant_premium_charge", str(instant_premium_charge))
@@ -1990,7 +2079,7 @@ def update_settings(
             upsert_setting(cur, "business_state_code", state_code)
         audit(cur, user, "UPDATE", "SETTINGS", None, "Operational settings updated")
         conn.commit()
-    return RedirectResponse("/admin/dashboard?message=Settings+saved", status_code=303)
+    return RedirectResponse("/admin/dashboard?message=Settings+saved#rules", status_code=303)
 
 
 @app.post("/admin/tax-profile")
@@ -2043,8 +2132,39 @@ def adjust_wallet(
             audit(cur, user, adjustment_type, "WALLET", franchisee_id, f"{signed_amount:.2f}: {remarks}")
             conn.commit()
     except ValueError as exc:
-        return RedirectResponse(f"/admin/dashboard?error={quote_plus(str(exc))}", status_code=303)
-    return RedirectResponse("/admin/dashboard?message=Wallet+updated", status_code=303)
+        return RedirectResponse(f"/admin/dashboard?error={quote_plus(str(exc))}#franchisees", status_code=303)
+    return RedirectResponse("/admin/dashboard?message=Wallet+updated#franchisees", status_code=303)
+
+
+def instant_demo_topup_available():
+    if os.getenv("APP_ENV", "").lower() == "production" or os.getenv("DATABASE_URL", "").strip():
+        return False
+    with get_conn() as conn:
+        return get_setting(conn.cursor(), "test_wallet_topup_enabled", "0") == "1"
+
+
+@app.post("/franchise/demo-topups")
+def franchise_demo_topup(request: Request, amount: float = Form(...), request_key: str = Form(..., min_length=16, max_length=64)):
+    if os.getenv("APP_ENV", "").lower() == "production" or os.getenv("DATABASE_URL", "").strip():
+        raise HTTPException(403, "Demo top-up is disabled")
+    user = require_role(request, "FRANCHISEE")
+    if isinstance(user, RedirectResponse):
+        raise HTTPException(401, "Please sign in again")
+    if not instant_demo_topup_available():
+        raise HTTPException(403, "Demo top-up is disabled")
+    if not math.isfinite(amount) or not 1 <= amount <= 100000:
+        raise HTTPException(400, "Enter an amount between INR 1 and 100000")
+    with get_conn() as conn:
+        cur = conn.cursor()
+        franchise = cur.execute("SELECT status,wallet_balance FROM franchisees WHERE id=?", (user["franchisee_id"],)).fetchone()
+        if not franchise or franchise["status"] != "ACTIVE":
+            raise HTTPException(403, "Franchise account must be active")
+        if operations.claim_mutation(cur, user, "franchise_demo_topup", request_key):
+            balance = wallet_entry(cur, user["franchisee_id"], "TEST_CREDIT", round(amount, 2), "TEST_MODE", None, "Local demo instant top-up (no real payment)", user["id"])
+            audit(cur, user, "TEST_CREDIT", "WALLET", user["franchisee_id"], f"Local demo top-up: {amount:.2f}")
+        else:
+            balance = cur.execute("SELECT wallet_balance FROM franchisees WHERE id=?", (user["franchisee_id"],)).fetchone()["wallet_balance"]
+    return {"status": "CREDITED", "wallet_balance": balance, "demo": True}
 
 
 @app.post("/admin/franchisees/{franchisee_id}/test-wallet-topup")
@@ -2088,22 +2208,23 @@ def record_advance(
     if isinstance(user, RedirectResponse):
         return user
     if advance_amount <= 0:
-        return RedirectResponse("/admin/dashboard?error=Advance+must+be+positive", status_code=303)
+        return RedirectResponse("/admin/dashboard?error=Advance+must+be+positive#franchisees", status_code=303)
     with get_conn() as conn:
         cur = conn.cursor()
         if not operations.claim_mutation(cur, user, "record_advance", request_key):
             return operations.redirect("This request was already processed. Review the ledger.")
-        pct = float(get_setting(cur, "wallet_credit_percent", "75"))
-        credit = round(advance_amount * pct / 100, 2)
+        # Cash deposits are credited rupee-for-rupee to the purchase wallet.
+        pct = 100.0
+        credit = round(advance_amount, 2)
         cur.execute(
             "INSERT INTO franchise_advances (franchisee_id, advance_amount, wallet_credit_percent, wallet_credited_amount, received_mode, received_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (franchisee_id, advance_amount, pct, credit, received_mode, now_str(), user["id"]),
         )
         advance_id = cur.lastrowid
-        wallet_entry(cur, franchisee_id, "ADVANCE_CREDIT", credit, "ADVANCE", advance_id, f"{pct:.0f}% wallet allocation", user["id"])
+        wallet_entry(cur, franchisee_id, "CASH_DEPOSIT" if received_mode.upper() == "CASH" else "ADVANCE_CREDIT", credit, "ADVANCE", advance_id, f"{pct:.0f}% purchase-wallet credit ({received_mode.upper()})", user["id"])
         audit(cur, user, "RECORD_ADVANCE", "FRANCHISEE", franchisee_id, f"Advance {advance_amount:.2f}; credit {credit:.2f}")
         conn.commit()
-    return RedirectResponse("/admin/dashboard?message=Advance+recorded", status_code=303)
+    return RedirectResponse("/admin/dashboard?message=Advance+recorded#franchisees", status_code=303)
 
 
 @app.post("/admin/franchisees/{franchisee_id}/status")
@@ -2117,7 +2238,7 @@ def change_franchise_status(franchisee_id: int, request: Request, status: str = 
         cur.execute("UPDATE franchisees SET status=? WHERE id=?", (status, franchisee_id))
         audit(cur, user, "STATUS_CHANGE", "FRANCHISEE", franchisee_id, status)
         conn.commit()
-    return RedirectResponse("/admin/dashboard?message=Franchisee+status+updated", status_code=303)
+    return RedirectResponse("/admin/dashboard?message=Franchisee+status+updated#franchisees", status_code=303)
 
 
 @app.post("/admin/outlets")
@@ -2136,8 +2257,8 @@ def create_outlet(
             audit(cur, user, "CREATE", "OUTLET", cur.lastrowid, code)
             conn.commit()
     except sqlite3.IntegrityError:
-        return RedirectResponse("/admin/dashboard?error=Outlet+code+already+exists", status_code=303)
-    return RedirectResponse("/admin/dashboard?message=Outlet+created", status_code=303)
+        return RedirectResponse("/admin/dashboard?error=Outlet+code+already+exists#network", status_code=303)
+    return RedirectResponse("/admin/dashboard?message=Outlet+created#network", status_code=303)
 
 
 @app.post("/admin/franchisees/{franchisee_id}/delivery-address")
@@ -2170,7 +2291,7 @@ def create_staff_user(
     if isinstance(user, RedirectResponse):
         return user
     if role not in {"POS", "GUARD", "DELIVERY", "ADMIN"}:
-        return RedirectResponse("/admin/dashboard?error=Invalid+staff+role", status_code=303)
+        return RedirectResponse("/admin/dashboard?error=Invalid+staff+role#network", status_code=303)
     try:
         with get_conn() as conn:
             cur = conn.cursor()
@@ -2181,8 +2302,8 @@ def create_staff_user(
             audit(cur, user, "CREATE", "USER", cur.lastrowid, role)
             conn.commit()
     except sqlite3.IntegrityError:
-        return RedirectResponse("/admin/dashboard?error=Login+ID+already+exists", status_code=303)
-    return RedirectResponse("/admin/dashboard?message=Staff+user+created", status_code=303)
+        return RedirectResponse("/admin/dashboard?error=Login+ID+already+exists#network", status_code=303)
+    return RedirectResponse("/admin/dashboard?message=Staff+user+created#network", status_code=303)
 
 
 @app.post("/admin/commissions")
@@ -2200,7 +2321,7 @@ def create_commission_rule(
         raise HTTPException(400, "Invalid commission amount")
     scope = "PRODUCT" if scope == "PRODUCT" else "DEPARTMENT"
     if commission_value < 0 or (scope == "PRODUCT" and not product_id) or (scope == "DEPARTMENT" and not department.strip()):
-        return RedirectResponse("/admin/dashboard?error=Complete+the+commission+rule", status_code=303)
+        return RedirectResponse("/admin/dashboard?error=Complete+the+commission+rule#rules", status_code=303)
     with get_conn() as conn:
         cur = conn.cursor()
         cur.execute("INSERT INTO commission_rules (scope, department, product_id, commission_type, commission_value, created_at, starts_on, ends_on) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -2208,7 +2329,7 @@ def create_commission_rule(
                      "FIXED" if commission_type == "FIXED" else "PERCENT", commission_value, now_str(), starts_on, ends_on))
         audit(cur, user, "CREATE", "COMMISSION_RULE", cur.lastrowid, f"{scope} {commission_value}")
         conn.commit()
-    return RedirectResponse("/admin/dashboard?message=Commission+rule+saved", status_code=303)
+    return RedirectResponse("/admin/dashboard?message=Commission+rule+saved#rules", status_code=303)
 
 
 @app.post("/admin/orders/{order_id}/status")
@@ -2220,28 +2341,78 @@ def admin_order_status(order_id: int, request: Request, status: str = Form(...),
         cur = conn.cursor()
         order = cur.execute("SELECT * FROM orders WHERE id=?", (order_id,)).fetchone()
         if not order:
-            return RedirectResponse("/admin/dashboard?error=Order+not+found", status_code=303)
+            return RedirectResponse("/admin/dashboard?error=Order+not+found#overview", status_code=303)
         if status == "EXECUTED" and order["status"] == "ON_HOLD":
             franchise = cur.execute("SELECT wallet_balance, status FROM franchisees WHERE id=?", (order["franchisee_id"],)).fetchone()
             dispatch_rules.validate_mode(cur, order["franchisee_id"], order["fulfillment_mode"])
             debit = float(order["wallet_required"])
             if not franchise or franchise["status"] != "ACTIVE" or float(franchise["wallet_balance"]) < debit:
-                return RedirectResponse("/admin/dashboard?error=Insufficient+wallet+or+inactive+franchise", status_code=303)
+                return RedirectResponse("/admin/dashboard?error=Insufficient+wallet+or+inactive+franchise#overview", status_code=303)
+            operations.reserve_order_inventory(cur, order_id, order["outlet_id"], user["id"])
             wallet_entry(cur, order["franchisee_id"], "ORDER_DEBIT", -debit, "ORDER", order_id, "Order executed by admin", user["id"])
             cur.execute("UPDATE orders SET status='EXECUTED', wallet_debit_amount=?, executed_at=?, updated_at=? WHERE id=?", (debit, now_str(), now_str(), order_id))
         elif status == "CANCELLED" and order["status"] in {"ON_HOLD", "EXECUTED"}:
             if cur.execute("SELECT 1 FROM bills WHERE order_id=?", (order_id,)).fetchone():
-                return RedirectResponse("/admin/dashboard?error=Billed+orders+cannot+be+cancelled", status_code=303)
+                return RedirectResponse("/admin/dashboard?error=Billed+orders+cannot+be+cancelled#overview", status_code=303)
             if order["status"] == "EXECUTED" and float(order["wallet_debit_amount"] or 0) > 0:
                 wallet_entry(cur, order["franchisee_id"], "ORDER_REFUND", float(order["wallet_debit_amount"]), "ORDER", order_id, reason or "Order cancelled", user["id"])
+            if order["status"] == "EXECUTED":
+                operations.release_order_inventory(cur, order_id, order["outlet_id"], user["id"], reason or "Order cancelled")
             cur.execute("UPDATE orders SET status='CANCELLED', updated_at=? WHERE id=?", (now_str(), order_id))
         else:
-            return RedirectResponse("/admin/dashboard?error=Invalid+order+transition", status_code=303)
+            return RedirectResponse("/admin/dashboard?error=Invalid+order+transition#overview", status_code=303)
         add_order_event(cur, order_id, status, reason or f"Status changed by admin", user["id"])
         audit(cur, user, "STATUS_CHANGE", "ORDER", order_id, f"{order['status']} -> {status}: {reason}")
         refresh_target_progress(cur, order["franchisee_id"], user["id"])
         conn.commit()
-    return RedirectResponse("/admin/dashboard?message=Order+updated", status_code=303)
+    return RedirectResponse("/admin/dashboard?message=Order+updated#overview", status_code=303)
+
+
+@app.post("/admin/orders/{order_id}/returns")
+def record_order_return(
+    order_id: int,
+    request: Request,
+    order_item_id: int = Form(...),
+    quantity: int = Form(...),
+    reason: str = Form(..., min_length=4, max_length=500),
+    request_key: str = Form(...),
+) -> RedirectResponse:
+    user = require_role(request, "ADMIN")
+    if isinstance(user, RedirectResponse):
+        return user
+    with get_conn() as conn:
+        cur = conn.cursor()
+        if not operations.claim_mutation(cur, user, "record_order_return", request_key):
+            return operations.redirect("This return request was already recorded.")
+        order = cur.execute(
+            "SELECT status, franchisee_id, commission_available_at, commission_released_at FROM orders WHERE id=?",
+            (order_id,),
+        ).fetchone()
+        item = cur.execute("SELECT id, qty, line_commission FROM order_items WHERE id=? AND order_id=?", (order_item_id, order_id)).fetchone()
+        if not order or order["status"] != "DELIVERED" or not item:
+            return RedirectResponse("/admin/dashboard?error=Return+requires+a+delivered+order#overview", status_code=303)
+        if not order["commission_available_at"] or now_str() >= order["commission_available_at"] or order["commission_released_at"]:
+            return RedirectResponse("/admin/dashboard?error=Customer+return+window+has+closed#overview", status_code=303)
+        prior = cur.execute(
+            "SELECT COALESCE(SUM(quantity),0) qty, COALESCE(SUM(commission_reversed),0) commission FROM order_returns WHERE order_item_id=?",
+            (order_item_id,),
+        ).fetchone()
+        available_qty = int(item["qty"]) - int(prior["qty"] or 0)
+        if quantity <= 0 or quantity > available_qty:
+            return RedirectResponse("/admin/dashboard?error=Return+quantity+exceeds+remaining+units#overview", status_code=303)
+        if quantity == available_qty:
+            commission_reversed = round(float(item["line_commission"]) - float(prior["commission"] or 0), 2)
+        else:
+            commission_reversed = round(float(item["line_commission"]) * quantity / int(item["qty"]), 2)
+        cur.execute(
+            "INSERT INTO order_returns(order_id,order_item_id,quantity,commission_reversed,reason,created_by,created_at) VALUES(?,?,?,?,?,?,?)",
+            (order_id, order_item_id, quantity, commission_reversed, reason.strip(), user["id"], now_str()),
+        )
+        add_order_event(cur, order_id, "RETURN_RECORDED", f"Returned {quantity} unit(s); pending commission adjusted", user["id"])
+        audit(cur, user, "RECORD_RETURN", "ORDER_ITEM", order_item_id,
+              f"Order {order_id}; qty {quantity}; held commission reduced {commission_reversed:.2f}; {reason.strip()}")
+        conn.commit()
+    return RedirectResponse("/admin/dashboard?message=Return+recorded+and+held+commission+adjusted#overview", status_code=303)
 
 
 @app.post("/admin/promotions")
@@ -2259,9 +2430,9 @@ def create_promotion(
         raise HTTPException(400, "Invalid promotion discount")
     scope = "PRODUCT" if scope == "PRODUCT" else "DEPARTMENT"
     if discount_value <= 0 or (scope == "PRODUCT" and not product_id) or (scope == "DEPARTMENT" and not department.strip()):
-        return RedirectResponse("/admin/dashboard?error=Complete+the+promotion+rule", status_code=303)
+        return RedirectResponse("/admin/dashboard?error=Complete+the+promotion+rule#rules", status_code=303)
     if starts_on and ends_on and starts_on > ends_on:
-        return RedirectResponse("/admin/dashboard?error=Promotion+end+date+must+follow+start+date", status_code=303)
+        return RedirectResponse("/admin/dashboard?error=Promotion+end+date+must+follow+start+date#rules", status_code=303)
     with get_conn() as conn:
         cur = conn.cursor()
         if franchisee_id and not cur.execute("SELECT 1 FROM franchisees WHERE id=?", (franchisee_id,)).fetchone():
@@ -2283,6 +2454,7 @@ def franchise_home(request: Request, period: str = "month", date_from: str = "",
         return user
     with get_conn() as conn:
         cur = conn.cursor()
+        release_matured_commissions(cur, user["franchisee_id"])
         refresh_target_progress(cur, user["franchisee_id"], user["id"])
         conn.commit()
         franchise = conn.execute("SELECT * FROM franchisees WHERE id=?", (user["franchisee_id"],)).fetchone()
@@ -2290,23 +2462,34 @@ def franchise_home(request: Request, period: str = "month", date_from: str = "",
         products = []
         for row in product_rows:
             sale_price, deal_name = resolve_deal(conn.cursor(), row, float(row["rsp"]), user["franchisee_id"])
+            stock_row = conn.execute("SELECT on_hand-reserved available FROM inventory_balances WHERE outlet_id=? AND product_id=?", (user["outlet_id"] or 1,row["id"])).fetchone()
             products.append(dict(row) | {
                 "sale_price": sale_price,
                 "deal_name": deal_name,
                 "commission_per_unit": round(resolve_commission(conn.cursor(), row, sale_price), 2),
                 "base_weight_kg": to_kg(float(row["unit_weight"]), row["weight_unit"]) * int(row["pack_multiplier"]),
+                "available_stock": int(stock_row["available"]) if stock_row else 0,
             })
         power_pick_ids = {
             product["id"] for product in sorted(products, key=lambda item: float(item["commission_per_unit"]), reverse=True)[:3]
         }
         for product in products:
             product["is_power_pick"] = product["id"] in power_pick_ids
+        on_hold_count = conn.execute("SELECT COUNT(*) FROM orders WHERE franchisee_id=? AND status='ON_HOLD'", (user["franchisee_id"],)).fetchone()[0]
         orders = conn.execute(
             """SELECT o.*, b.id bill_id, b.bill_number FROM orders o
                LEFT JOIN bills b ON b.order_id=o.id
-               WHERE o.franchisee_id=? ORDER BY o.id DESC LIMIT 50""", (user["franchisee_id"],)
+               WHERE o.franchisee_id=? ORDER BY o.id DESC""", (user["franchisee_id"],)
         ).fetchall()
         order_ids = [row["id"] for row in orders]
+        reorder_orders = {}
+        if order_ids:
+            reorder_lines = conn.execute(f"SELECT order_id,product_id,qty,selected_weight_kg FROM order_items WHERE order_id IN ({','.join('?' for _ in order_ids)}) ORDER BY id", tuple(order_ids)).fetchall()
+            for order in orders:
+                reorder_orders[str(order['id'])] = {'name': order['customer_name'], 'phone': order['customer_phone'], 'mode': order['fulfillment_mode'], 'address': order['buyer_address'], 'items': []}
+            for line in reorder_lines:
+                reorder_orders[str(line['order_id'])]['items'].append({'id': str(line['product_id']), 'qty': line['qty'], 'weight': line['selected_weight_kg']})
+
         order_timelines: dict[int, list[dict[str, str]]] = {order_id: [] for order_id in order_ids}
         if order_ids:
             event_rows = conn.execute(
@@ -2334,6 +2517,7 @@ def franchise_home(request: Request, period: str = "month", date_from: str = "",
                 "OUT_FOR_DELIVERY": "Delivery partner is on the way",
                 "ASSIGNED": "Delivery partner assigned",
                 "DELIVERED": "Delivered - order complete",
+                "RETURN_RECORDED": "Customer return recorded",
                 "DELIVERY_FAILED": "Delivery issue reported",
                 "CANCELLED": "Order cancelled",
                 "REOPEN": "Delivery reopened by admin",
@@ -2352,7 +2536,7 @@ def franchise_home(request: Request, period: str = "month", date_from: str = "",
         ).fetchall()
         outlet = conn.execute("SELECT * FROM outlets WHERE id=?", (user["outlet_id"] or 1,)).fetchone()
         earnings = conn.execute(
-            "SELECT COALESCE(SUM(commission_total), 0) total FROM orders WHERE franchisee_id=? AND status NOT IN ('ON_HOLD','CANCELLED')",
+            "SELECT COALESCE(SUM(amount), 0) total FROM earnings_wallet_ledger WHERE franchisee_id=? AND entry_type='ORDER_COMMISSION'",
             (user["franchisee_id"],),
         ).fetchone()["total"]
         settings = dict(conn.execute("SELECT key, value FROM settings").fetchall())
@@ -2367,6 +2551,15 @@ def franchise_home(request: Request, period: str = "month", date_from: str = "",
         earnings_wallet = conn.execute(
             "SELECT * FROM earnings_wallets WHERE franchisee_id=?", (user["franchisee_id"],)
         ).fetchone()
+        locked_commission = conn.execute(
+            """SELECT COALESCE(SUM(CASE WHEN o.commission_total-COALESCE((
+                       SELECT SUM(r.commission_reversed) FROM order_returns r WHERE r.order_id=o.id),0)>0
+                       THEN o.commission_total-COALESCE((SELECT SUM(r2.commission_reversed) FROM order_returns r2 WHERE r2.order_id=o.id),0)
+                       ELSE 0 END),0) amount
+               FROM orders o WHERE o.franchisee_id=? AND o.status='DELIVERED'
+                 AND o.commission_released_at IS NULL AND o.commission_available_at>?""",
+            (user["franchisee_id"], now_str()),
+        ).fetchone()["amount"]
         earnings_wallet_ledger = conn.execute(
             "SELECT * FROM earnings_wallet_ledger WHERE franchisee_id=? ORDER BY id DESC LIMIT 30", (user["franchisee_id"],)
         ).fetchall()
@@ -2395,7 +2588,13 @@ def franchise_home(request: Request, period: str = "month", date_from: str = "",
                    (SELECT COUNT(*) FROM docket_bills db WHERE db.docket_id=d.id),
                    MIN(o.fulfillment_mode), 0,
                    (SELECT t.id FROM delivery_tasks t WHERE t.entity_type='DOCKET' AND t.entity_id=d.id ORDER BY t.id DESC LIMIT 1)
-            FROM dockets d WHERE d.franchisee_id=? ORDER BY 2 DESC LIMIT 30
+            FROM dockets d
+            JOIN docket_bills dispatch_db ON dispatch_db.docket_id=d.id
+            JOIN bills dispatch_b ON dispatch_b.id=dispatch_db.bill_id
+            JOIN orders o ON o.id=dispatch_b.order_id
+            WHERE d.franchisee_id=?
+            GROUP BY d.id
+            ORDER BY 2 DESC LIMIT 30
             """, (user["franchisee_id"], user["franchisee_id"])
         ).fetchall()
         dispatch_stage_labels = {
@@ -2407,7 +2606,7 @@ def franchise_home(request: Request, period: str = "month", date_from: str = "",
             "WEIGHT_CHECK_ALERT": "Weight needs recheck",
             "WEIGHT_CHECK_PASSED": "Verified by guard",
             "DELIVERY_ASSIGNED": "Delivery partner assigned - awaiting pickup",
-            "PICKED_BY_FRANCHISEE": "Picked up",
+            "PICKED_BY_FRANCHISEE": "Picked up by franchise",
             "PICKED_BY_DELIVERY": "Handed to delivery partner",
             "OUT_FOR_DELIVERY": "On the way to franchise",
             "DELIVERED": "Delivered to franchise",
@@ -2421,7 +2620,7 @@ def franchise_home(request: Request, period: str = "month", date_from: str = "",
             "FAILED": "Delivery needs attention",
         }
         dispatches = [dict(row) | {
-            "status_label": task_stage_labels.get(row["task_status"], dispatch_stage_labels.get(row["status"], row["status"].replace("_", " ").title())),
+            "status_label": ("Picked up by franchise" if row["fulfillment_mode"] == "FRANCHISE_PICKUP" and row["status"] in {"DELIVERED", "PICKED_BY_FRANCHISEE"} else task_stage_labels.get(row["task_status"], dispatch_stage_labels.get(row["status"], row["status"].replace("_", " ").title()))),
             "can_pickup_code": row["fulfillment_mode"] == "FRANCHISE_PICKUP" and row["status"] in {"WEIGHT_CHECK_PASSED", "WEIGHT_CHECK_ALERT"} and (row["entity_type"] == "DOCKET" or not row["is_grouped"]),
             "can_delivery_code": row["fulfillment_mode"] == "DELIVERY_MAN" and row["task_status"] == "OUT_FOR_DELIVERY" and row["task_id"] is not None,
             "dispatch_info": (
@@ -2429,15 +2628,26 @@ def franchise_home(request: Request, period: str = "month", date_from: str = "",
                 else f"Order {row['order_number']} · {row['customer_name']}"
             ),
         } for row in dispatches]
+        def dispatch_priority(item):
+            if item['status'] in {'DELIVERED', 'PICKED_BY_FRANCHISEE'} or item['task_status'] == 'DELIVERED':
+                priority = 4
+            elif item['task_status'] == 'FAILED' or item['status'] == 'WEIGHT_CHECK_ALERT':
+                priority = 0
+            elif item['can_pickup_code'] or item['can_delivery_code']:
+                priority = 1
+            else:
+                priority = 3 if item.get('is_grouped') and item['entity_type'] == 'BILL' else 2
+            return priority, item['created_at'] or '', item['number']
+        dispatches.sort(key=dispatch_priority)
     return templates.TemplateResponse(
         "franchise_home.html",
         {"request": request, "user": user, "franchise": franchise, "products": products, "orders": orders,
          "dockets": dockets, "outlet": outlet, "earnings": earnings, "settings": settings, "departments": departments,
-         "order_timelines": order_timelines,
-         "wallet_ledger": wallet_ledger, "earnings_wallet": earnings_wallet,
+         "order_timelines": order_timelines, "on_hold_count": on_hold_count, "reorder_orders": reorder_orders,
+         "wallet_ledger": wallet_ledger, "earnings_wallet": earnings_wallet, "locked_commission": locked_commission,
          "earnings_wallet_ledger": earnings_wallet_ledger, "targets": targets,
          "guide": guide, "summary": summary, "summary_period": period,
-         "bank_account": bank_account, "dispatches": dispatches,
+         "bank_account": bank_account, "dispatches": dispatches, "payment_ready": operations.providers.payment_ready(), "demo_topup_ready": instant_demo_topup_available(),
          "allowed_modes": available_modes, "free_deliveries_used": free_deliveries_used},
     )
 
@@ -2449,8 +2659,9 @@ def customer_bill(request: Request, bill_id: int):
         return user
     with get_conn() as conn:
         bill = conn.execute(
-            """SELECT b.*, o.order_number, o.customer_name, o.customer_phone, o.item_subtotal,
+            """SELECT b.*, o.order_number, o.customer_name, o.customer_phone, o.buyer_address, o.item_subtotal,
                       o.delivery_charge, o.total, o.fulfillment_mode, o.supply_state_code, o.supplier_state_code, o.created_at order_created_at,
+                      o.return_window_days, o.delivered_at, o.commission_available_at,
                       f.shop_name, f.name franchise_name, f.address franchise_address, f.gst_number franchise_gstin,
                       ot.name outlet_name, ot.code outlet_code, ot.address outlet_address
                FROM bills b JOIN orders o ON o.id=b.order_id JOIN franchisees f ON f.id=b.franchisee_id
@@ -2468,6 +2679,10 @@ def customer_bill(request: Request, bill_id: int):
         items = [dict(row) for row in item_rows]
         tax_breakdown = invoice_tax_breakdown(items, float(bill["delivery_charge"] or 0), bill["supply_state_code"] != bill["supplier_state_code"])
         settings = dict(conn.execute("SELECT key,value FROM settings").fetchall())
+    return_by = bill["commission_available_at"]
+    return_policy = f"Customer returns are accepted within {bill['return_window_days']} days after confirmed pickup/delivery."
+    if return_by:
+        return_policy += f" Contact the franchise to record a return before {return_by} IST."
     item_text = ", ".join(
         f"{item['product_name']} {item['pack_label'] or ('%g kg' % item['selected_weight_kg'])} x {item['qty']}"
         for item in items
@@ -2476,7 +2691,7 @@ def customer_bill(request: Request, bill_id: int):
     message = (
         f"Aapoorti Tax Invoice {bill['bill_number']}\nCustomer: {bill['customer_name']}\n"
         f"Items: {item_text}\nGST-inclusive total: INR {bill['total']:.2f}\n"
-        f"Included GST: INR {total_tax:.2f}\nThank you for shopping with {bill['shop_name']}."
+        f"Included GST: INR {total_tax:.2f}\n{return_policy}\nThank you for shopping with {bill['shop_name']}."
     )
     phone = "".join(char for char in bill["customer_phone"] if char.isdigit())
     if len(phone) == 10:
@@ -2487,7 +2702,7 @@ def customer_bill(request: Request, bill_id: int):
         {"request": request, "user": user, "bill": bill, "items": items, "tax_breakdown": tax_breakdown,
          "total_tax": round(total_tax, 2),
          "delivery_taxable": round(float(bill["delivery_charge"] or 0) * 100 / 118, 2),
-         "settings": settings, "whatsapp_url": whatsapp_url},
+         "settings": settings, "whatsapp_url": whatsapp_url, "return_policy": return_policy},
     )
 
 
@@ -2517,7 +2732,7 @@ def download_franchise_summary(
         ["Metric", "Amount / Count"], ["GST-inclusive sales", f"INR {summary['sales']:.2f}"],
         ["Target-eligible sales", f"INR {summary['eligible_sales']:.2f}"], ["Executed orders", str(summary["orders"])],
         ["Unique customers", str(summary["customers"])], ["Average basket", f"INR {summary['average_basket']:.2f}"],
-        ["Product commission", f"INR {summary['commission']:.2f}"], ["Target rewards credited", f"INR {summary['target_rewards']:.2f}"],
+        ["Product profit", f"INR {summary['commission']:.2f}"], ["Target rewards credited", f"INR {summary['target_rewards']:.2f}"],
         ["Purchase-wallet deposits", f"INR {summary['wallet_in']:.2f}"], ["Purchase-wallet withdrawals", f"INR {summary['wallet_out']:.2f}"],
         ["Earnings transferred", f"INR {summary['earnings_transferred']:.2f}"], ["Included GST", f"INR {summary['total_tax']:.2f}"],
     ]
@@ -2549,6 +2764,7 @@ def transfer_earnings_to_purchase_wallet(request: Request, amount: float = Form(
     try:
         with get_conn() as conn:
             cur = conn.cursor()
+            release_matured_commissions(cur, user["franchisee_id"])
             if not operations.claim_mutation(cur, user, "transfer_earnings_to_purchase_wallet", request_key):
                 return operations.redirect("This request was already processed. Review the ledger.")
             wallet = cur.execute("SELECT balance FROM earnings_wallets WHERE franchisee_id=?", (user["franchisee_id"],)).fetchone()
@@ -2578,6 +2794,90 @@ def transfer_earnings_to_purchase_wallet(request: Request, amount: float = Form(
     return RedirectResponse("/franchise/home?message=earnings_transferred#account", status_code=303)
 
 
+@app.get("/franchise/customers/list")
+def list_franchise_customers(request: Request, q: str = '', offset: int = 0):
+    user = require_role(request, "FRANCHISEE")
+    if isinstance(user, RedirectResponse):
+        raise HTTPException(401, "Please sign in again")
+    offset = max(0, offset)
+    with get_conn() as conn:
+        rows = conn.execute("""WITH phones AS (
+            SELECT customer_phone phone FROM orders WHERE franchisee_id=? AND customer_phone<>''
+            UNION SELECT phone FROM franchise_customer_profiles WHERE franchisee_id=?
+        ), directory AS (
+            SELECT phones.phone, COALESCE(profile.name,(SELECT customer_name FROM orders WHERE franchisee_id=? AND customer_phone=phones.phone ORDER BY id DESC LIMIT 1)) name
+            FROM phones LEFT JOIN franchise_customer_profiles profile ON profile.phone=phones.phone AND profile.franchisee_id=?
+        ) SELECT phone,name FROM directory WHERE LOWER(name) LIKE ? OR phone LIKE ?
+        ORDER BY LOWER(name),phone LIMIT 21 OFFSET ?""", (user['franchisee_id'],user['franchisee_id'],user['franchisee_id'],user['franchisee_id'],'%'+q.strip().lower()[:100]+'%','%'+q.strip()[:100]+'%',offset)).fetchall()
+    return {'customers': [dict(row) for row in rows[:20]], 'has_more': len(rows)>20, 'next_offset':offset+min(20,len(rows))}
+
+
+@app.get("/franchise/customers/{phone}/details")
+def franchise_customer_details(request: Request, phone: str):
+    user = require_role(request, "FRANCHISEE")
+    if isinstance(user, RedirectResponse):
+        raise HTTPException(401, "Please sign in again")
+    with get_conn() as conn:
+        profile = conn.execute('SELECT * FROM franchise_customer_profiles WHERE franchisee_id=? AND phone=?', (user['franchisee_id'],phone)).fetchone()
+        metrics = conn.execute("""SELECT COUNT(*) orders,
+            SUM(CASE WHEN status IN ('DELIVERED','PICKED_BY_FRANCHISEE') THEN 1 ELSE 0 END) completed,
+            SUM(CASE WHEN status IN ('DELIVERED','PICKED_BY_FRANCHISEE') THEN total ELSE 0 END) spent,
+            MIN(CASE WHEN status IN ('DELIVERED','PICKED_BY_FRANCHISEE') THEN created_at END) first_purchase,
+            MAX(CASE WHEN status IN ('DELIVERED','PICKED_BY_FRANCHISEE') THEN created_at END) last_purchase
+            FROM orders WHERE franchisee_id=? AND customer_phone=?""",(user['franchisee_id'],phone)).fetchone()
+        latest = conn.execute('SELECT id,customer_name,created_at FROM orders WHERE franchisee_id=? AND customer_phone=? ORDER BY id DESC LIMIT 1',(user['franchisee_id'],phone)).fetchone()
+        if not profile and not latest:
+            raise HTTPException(404, 'Customer not found')
+        products = conn.execute("""SELECT COALESCE(NULLIF(oi.product_name_snapshot,''),p.product_name) name, COUNT(DISTINCT o.id) purchases
+            FROM orders o JOIN order_items oi ON oi.order_id=o.id LEFT JOIN products p ON p.id=oi.product_id
+            WHERE o.franchisee_id=? AND o.customer_phone=? AND o.status IN ('DELIVERED','PICKED_BY_FRANCHISEE')
+            GROUP BY oi.product_id,COALESCE(NULLIF(oi.product_name_snapshot,''),p.product_name)
+            ORDER BY purchases DESC LIMIT 3""",(user['franchisee_id'],phone)).fetchall()
+    completed = int(metrics['completed'] or 0)
+    interval = None
+    if completed>1:
+        interval=round((datetime.strptime(metrics['last_purchase'],'%Y-%m-%d %H:%M:%S')-datetime.strptime(metrics['first_purchase'],'%Y-%m-%d %H:%M:%S')).total_seconds()/86400/(completed-1))
+    return {'name':profile['name'] if profile else latest['customer_name'],'phone':phone,'notes':profile['notes'] if profile else '', 'address':profile['address'] if profile else '', 'orders':metrics['orders'],'completed':completed,'spent':float(metrics['spent'] or 0),'average':float(metrics['spent'] or 0)/completed if completed else 0,'last_purchase':metrics['last_purchase'],'interval':interval,'repeat_id':latest['id'] if latest else None,'products':[dict(row) for row in products]}
+
+
+@app.post("/franchise/customers")
+def save_franchise_customer(request: Request, name: str = Form(...), phone: str = Form(...), notes: str = Form(''), address: str = Form('')):
+    user = require_role(request, "FRANCHISEE")
+    if isinstance(user, RedirectResponse):
+        return user
+    name, phone, notes, address = name.strip(), phone.strip(), notes.strip(), address.strip()
+    if not 2 <= len(name) <= 100 or len(phone) != 10 or not phone.isascii() or not phone.isdigit() or len(notes) > 1000 or len(address) > 500:
+        raise HTTPException(400, "Enter a name, 10-digit mobile number and notes up to 1000 characters")
+    with get_conn() as conn:
+        conn.execute("""INSERT INTO franchise_customer_profiles(franchisee_id,phone,name,notes,address,updated_at) VALUES(?,?,?,?,?,?)
+            ON CONFLICT(franchisee_id,phone) DO UPDATE SET name=excluded.name,notes=excluded.notes,address=excluded.address,updated_at=excluded.updated_at""", (user['franchisee_id'], phone, name, notes, address, now_str()))
+        audit(conn.cursor(), user, "SAVE_CUSTOMER", "CUSTOMER", None, phone)
+    return RedirectResponse('/franchise/home?message=customer_saved#customers', status_code=303)
+
+
+@app.post("/franchise/orders/{order_id}/cancel")
+def cancel_held_order(order_id: int, request: Request, request_key: str = Form(..., min_length=16, max_length=64)):
+    user = require_role(request, "FRANCHISEE")
+    if isinstance(user, RedirectResponse):
+        return user
+    with get_conn() as conn:
+        cur = conn.cursor()
+        order = cur.execute("SELECT * FROM orders WHERE id=? AND franchisee_id=?", (order_id, user["franchisee_id"])).fetchone()
+        if not order:
+            raise HTTPException(404, "Order not found")
+        if order["status"] == "CANCELLED":
+            return RedirectResponse("/franchise/home?message=order_cancelled#orders", status_code=303)
+        if order["status"] != "ON_HOLD" or cur.execute("SELECT 1 FROM bills WHERE order_id=?", (order_id,)).fetchone():
+            raise HTTPException(409, "Only unbilled on-hold orders can be cancelled here")
+        if operations.claim_mutation(cur, user, "cancel_held_order", request_key):
+            cur.execute("UPDATE orders SET status='CANCELLED',updated_at=? WHERE id=? AND status='ON_HOLD'", (now_str(), order_id))
+            if cur.rowcount != 1:
+                raise HTTPException(409, "Order changed. Refresh and try again")
+            add_order_event(cur, order_id, "CANCELLED", "On-hold order cancelled by franchisee", user["id"])
+            audit(cur, user, "CANCEL", "ORDER", order_id, order["order_number"])
+    return RedirectResponse("/franchise/home?message=order_cancelled#orders", status_code=303)
+
+
 @app.post("/franchise/orders/{order_id}/execute")
 def execute_held_order(order_id: int, request: Request) -> RedirectResponse:
     user = require_role(request, "FRANCHISEE")
@@ -2588,17 +2888,18 @@ def execute_held_order(order_id: int, request: Request) -> RedirectResponse:
         order = cur.execute("SELECT * FROM orders WHERE id=? AND franchisee_id=?", (order_id, user["franchisee_id"])).fetchone()
         franchise = cur.execute("SELECT * FROM franchisees WHERE id=?", (user["franchisee_id"],)).fetchone()
         if not order or order["status"] != "ON_HOLD":
-            return RedirectResponse("/franchise/home?error=invalid_order", status_code=303)
+            return RedirectResponse("/franchise/home?error=invalid_order#orders", status_code=303)
         if not franchise or franchise["status"] != "ACTIVE" or float(franchise["wallet_balance"]) < float(order["wallet_required"]):
-            return RedirectResponse("/franchise/home?error=wallet", status_code=303)
+            return RedirectResponse("/franchise/home?error=wallet#orders", status_code=303)
         dispatch_rules.validate_mode(cur, franchise["id"], order["fulfillment_mode"])
+        operations.reserve_order_inventory(cur, order_id, order["outlet_id"], user["id"])
         wallet_entry(cur, franchise["id"], "ORDER_DEBIT", -float(order["wallet_required"]), "ORDER", order_id, order["order_number"], user["id"])
         cur.execute("UPDATE orders SET status='EXECUTED', wallet_debit_amount=?, executed_at=?, updated_at=? WHERE id=?", (order["wallet_required"], now_str(), now_str(), order_id))
         add_order_event(cur, order_id, "EXECUTED", "Executed by franchisee", user["id"])
         audit(cur, user, "EXECUTE", "ORDER", order_id, order["order_number"])
         refresh_target_progress(cur, franchise["id"], user["id"])
         conn.commit()
-    return RedirectResponse("/franchise/home?message=order_executed", status_code=303)
+    return RedirectResponse("/franchise/home?message=order_executed#orders", status_code=303)
 
 
 @app.post("/franchise/orders")
@@ -2613,16 +2914,20 @@ def create_order(
     customer_name: str = Form(""),
     customer_phone: str = Form(""),
     customer_address: str = Form(""),
+    buyer_address: str = Form(""),
     distance_km: float = Form(0),
     request_key: str = Form(...),
 ) -> RedirectResponse:
     user = require_role(request, "FRANCHISEE")
     if isinstance(user, RedirectResponse):
         return user
+    buyer_address = buyer_address.strip()
+    if len(buyer_address) > 500:
+        raise HTTPException(400, "Customer address must be within 500 characters")
     customer_name = customer_name.strip()
     customer_phone = "".join(char for char in customer_phone if char.isdigit())
     if len(customer_name) < 2 or len(customer_phone) != 10:
-        return RedirectResponse("/franchise/home?error=customer_details", status_code=303)
+        return RedirectResponse("/franchise/home?error=customer_details#checkout", status_code=303)
     with get_conn() as conn:
         cur = conn.cursor()
         franchise = cur.execute("SELECT * FROM franchisees WHERE id=?", (user["franchisee_id"],)).fetchone()
@@ -2641,13 +2946,13 @@ def create_order(
         if not math.isfinite(distance_km) or not 0 <= distance_km <= 1000:
             raise HTTPException(400, "Invalid distance")
         if not franchise or not cart:
-            return RedirectResponse("/franchise/home", status_code=303)
+            return RedirectResponse("/franchise/home#checkout", status_code=303)
         if franchise["status"] != "ACTIVE":
-            return RedirectResponse("/franchise/home?error=inactive", status_code=303)
+            return RedirectResponse("/franchise/home?error=inactive#checkout", status_code=303)
         dispatch_rules.validate_mode(cur, franchise["id"], fulfillment_mode)
         franchise_delivery_address = (franchise["delivery_address"] or franchise["address"] or "").strip()
         if fulfillment_mode == "DELIVERY_MAN" and len(franchise_delivery_address) < 5:
-            return RedirectResponse("/franchise/home?error=delivery_address", status_code=303)
+            return RedirectResponse("/franchise/home?error=delivery_address#checkout", status_code=303)
 
         try:
             product_ids = [int(item["id"]) for item in cart]
@@ -2689,7 +2994,7 @@ def create_order(
             lines.append((product, item_qty, selected_weight_kg, sale_price, line_total, unit_commission, commission,
                           gst_rate, taxable_value, gst_amount))
         if not lines:
-            return RedirectResponse("/franchise/home", status_code=303)
+            return RedirectResponse("/franchise/home#checkout", status_code=303)
 
         if fulfillment_mode == "DELIVERY_MAN" and franchise["route_distance_km"] is not None and franchise["route_outlet_id"] == franchise["outlet_id"]:
             distance_km = float(franchise["route_distance_km"])
@@ -2721,24 +3026,52 @@ def create_order(
         if final_status == "EXECUTED" and wallet_required > float(franchise["wallet_balance"]):
             final_status = "ON_HOLD"
 
+        outlet_id = user["outlet_id"] or 1
+        if final_status == "EXECUTED":
+            requested = {}
+            for product, item_qty, *_ in lines:
+                requested[product["id"]] = requested.get(product["id"], 0) + item_qty
+            for pid, needed in requested.items():
+                stock = cur.execute("SELECT on_hand-reserved available FROM inventory_balances WHERE outlet_id=? AND product_id=?", (outlet_id,pid)).fetchone()
+                available = int(stock["available"]) if stock else 0
+                if needed > available:
+                    product = product_map[pid]
+                    return RedirectResponse(f"/franchise/home?error={quote_plus('Not enough stock for ' + product['product_name'] + ': ' + str(available) + ' available')}#checkout", status_code=303)
+
         previous = cur.execute("SELECT order_number,status FROM orders WHERE request_key=? AND franchisee_id=?", (request_key, user["franchisee_id"])).fetchone() if request_key else None
         if previous:
-            return RedirectResponse(f"/franchise/home?created={previous['order_number']}&status={previous['status']}", status_code=303)
+            return RedirectResponse(f"/franchise/home?created={previous['order_number']}&status={previous['status']}#orders", status_code=303)
+        if final_status == "ON_HOLD":
+            requested = {}
+            for product, item_qty, *_ in lines:
+                requested[product["id"]] = requested.get(product["id"], 0) + item_qty
+            for pid, needed in requested.items():
+                stock = cur.execute("SELECT on_hand-reserved available FROM inventory_balances WHERE outlet_id=? AND product_id=?", (outlet_id,pid)).fetchone()
+                available = int(stock["available"]) if stock else 0
+                if needed > available:
+                    product = product_map[pid]
+                    return RedirectResponse(f"/franchise/home?error={quote_plus('Not enough stock for ' + product['product_name'] + ': ' + str(available) + ' available')}#checkout", status_code=303)
         order_number = next_code("ORD-", "orders", "order_number")
+        return_window_days = max(1, min(30, int(float(get_setting(cur, "customer_return_window_days", "4")))))
         created_timestamp = now_str()
         executed_timestamp = created_timestamp if final_status == "EXECUTED" else None
         cur.execute(
             """
             INSERT INTO orders
             (order_number, franchisee_id, outlet_id, delivery_type, fulfillment_mode, status, item_subtotal, commission_total, delivery_charge, total, created_at,
-             executed_at, customer_name, customer_phone, customer_address, distance_km)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             executed_at, customer_name, customer_phone, customer_address, distance_km, return_window_days)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (order_number, user["franchisee_id"], user["outlet_id"] or 1, delivery_type, fulfillment_mode, final_status,
+            (order_number, user["franchisee_id"], outlet_id, delivery_type, fulfillment_mode, final_status,
              item_subtotal, commission_total, delivery_charge, total, created_timestamp, executed_timestamp, customer_name,
-             customer_phone, franchise_delivery_address, max(0, distance_km)),
+             customer_phone, franchise_delivery_address, max(0, distance_km), return_window_days),
         )
         order_id = cur.lastrowid
+        saved_profile = cur.execute('SELECT address FROM franchise_customer_profiles WHERE franchisee_id=? AND phone=?', (user['franchisee_id'],customer_phone)).fetchone()
+        effective_address = buyer_address or (saved_profile['address'] if saved_profile else '')
+        cur.execute('UPDATE orders SET buyer_address=? WHERE id=?',(effective_address,order_id))
+        cur.execute("""INSERT INTO franchise_customer_profiles(franchisee_id,phone,name,notes,address,updated_at) VALUES(?,?,?,'',?,?)
+            ON CONFLICT(franchisee_id,phone) DO UPDATE SET name=excluded.name,address=excluded.address,updated_at=excluded.updated_at""",(user['franchisee_id'],customer_phone,customer_name,effective_address,now_str()))
         cur.execute("UPDATE orders SET request_key=?, supply_state_code=?, supplier_state_code=?, wallet_required=?,delivery_cost=?,delivery_charge_bearer=? WHERE id=?", (request_key or uuid4().hex, franchise["state_code"], get_setting(cur, "business_state_code", "23"), wallet_required, delivery_cost, bearer, order_id))
         cur.execute(
             "UPDATE orders SET wallet_debit_amount=?, payable_to_outlet=?, updated_at=? WHERE id=?",
@@ -2759,6 +3092,9 @@ def create_order(
             )
 
         if final_status == "EXECUTED":
+            operations.reserve_order_inventory(cur, order_id, outlet_id, user["id"])
+
+        if final_status == "EXECUTED":
             wallet_entry(cur, franchise["id"], "ORDER_DEBIT", -wallet_required, "ORDER", order_id, order_number, user["id"])
 
         add_order_event(cur, order_id, final_status, "Order created", user["id"])
@@ -2769,7 +3105,7 @@ def create_order(
 
         conn.commit()
     return RedirectResponse(
-        f"/franchise/home?created={order_number}&status={final_status}", status_code=303
+        f"/franchise/home?created={order_number}&status={final_status}#orders", status_code=303
     )
 
 
@@ -2838,8 +3174,9 @@ def create_bill(request: Request, order_id: int = Form(...)) -> RedirectResponse
         order = cur.execute("SELECT * FROM orders WHERE id=? AND status='EXECUTED' AND outlet_id=?", (order_id, user["outlet_id"] or 1)).fetchone()
         existing = cur.execute("SELECT 1 FROM bills WHERE order_id=?", (order_id,)).fetchone()
         if not order or existing:
-            return RedirectResponse("/pos/home", status_code=303)
+            return RedirectResponse("/pos/home#queue", status_code=303)
         operations.require_picked(cur, order, user)
+        operations.consume_order_inventory(cur, order_id, order["outlet_id"], user["id"])
         expected = cur.execute("SELECT COALESCE(SUM(line_weight_kg),0) w FROM order_items WHERE order_id=?", (order_id,)).fetchone()["w"]
         bill_number = next_code("BILL-", "bills", "bill_number")
         cur.execute(
@@ -2854,7 +3191,7 @@ def create_bill(request: Request, order_id: int = Form(...)) -> RedirectResponse
         add_order_event(cur, order_id, "BILLED", bill_number, user["id"])
         audit(cur, user, "CREATE", "BILL", bill_id, bill_number)
         conn.commit()
-    return RedirectResponse("/pos/home", status_code=303)
+    return RedirectResponse("/pos/home#packing", status_code=303)
 
 
 @app.post("/pos/dockets")
@@ -2864,7 +3201,7 @@ def create_docket(request: Request, bill_ids: str = Form(...)) -> RedirectRespon
         return user
     selected = [int(x.strip()) for x in bill_ids.split(",") if x.strip().isdigit()]
     if not selected or len(selected) > 100:
-        return RedirectResponse("/pos/home", status_code=303)
+        return RedirectResponse("/pos/home#packing", status_code=303)
     with get_conn() as conn:
         cur = conn.cursor()
         rows = cur.execute(
@@ -2875,16 +3212,16 @@ def create_docket(request: Request, bill_ids: str = Form(...)) -> RedirectRespon
             tuple(selected) + (user["outlet_id"] or 1,),
         ).fetchall()
         if len(rows) != len(set(selected)):
-            return RedirectResponse("/pos/home?error=Select+only+packed+unassigned+bills", status_code=303)
+            return RedirectResponse("/pos/home?error=Select+only+packed+unassigned+bills#packing", status_code=303)
         if len(rows) > int(get_setting(cur, "max_bills_per_docket", "30")):
             raise HTTPException(400, "Docket bill limit exceeded")
         franchise_ids = {r["franchisee_id"] for r in rows}
         fulfillment_modes = {r["fulfillment_mode"] for r in rows}
         if len(franchise_ids) != 1 or len(fulfillment_modes) != 1:
-            return RedirectResponse("/pos/home?error=Docket+bills+must+share+one+franchise+and+fulfilment+mode", status_code=303)
+            return RedirectResponse("/pos/home?error=Docket+bills+must+share+one+franchise+and+fulfilment+mode#packing", status_code=303)
         dispatch_rules.make_docket(cur, rows, user)
         conn.commit()
-    return RedirectResponse("/pos/home", status_code=303)
+    return RedirectResponse("/pos/home?message=Docket+created#dockets", status_code=303)
 
 
 @app.post("/pos/handover")
@@ -2905,7 +3242,7 @@ def pos_handover(
         row = cur.execute(f"SELECT * FROM {table} WHERE id=? AND outlet_id=?", (entity_id, user["outlet_id"] or 1)).fetchone()
         allowed = row and ((entity_type == "BILL" and row["status"] == "PACKED_INDIVIDUALLY") or (entity_type == "DOCKET" and row["status"] == "DOCKET_CREATED"))
         if not allowed:
-            return RedirectResponse("/pos/home?error=Entity+is+not+ready+for+guard", status_code=303)
+            return RedirectResponse("/pos/home?error=Entity+is+not+ready+for+guard#" + ("dockets" if entity_type == "DOCKET" else "packing"), status_code=303)
         if entity_type == "BILL":
             entity_type, entity_id = dispatch_rules.prepare_handover(cur, row, user)
             table = "bills" if entity_type == "BILL" else "dockets"
@@ -2920,7 +3257,7 @@ def pos_handover(
             add_order_event(cur, order_id, "HANDED_TO_GUARD", "Awaiting guard receipt scan", user["id"])
         audit(cur, user, "HANDOVER", entity_type, entity_id, "POS to GUARD")
         conn.commit()
-    return RedirectResponse("/pos/home", status_code=303)
+    return RedirectResponse("/pos/home?message=Handed+to+guard#" + ("dockets" if entity_type == "DOCKET" else "packing"), status_code=303)
 
 
 @app.post("/pos/bills/{bill_id}/pack")
@@ -2936,7 +3273,7 @@ def pack_bill(bill_id: int, request: Request) -> RedirectResponse:
             add_order_event(cur, bill["order_id"], "PACKED_INDIVIDUALLY", bill["bill_number"], user["id"])
             audit(cur, user, "PACK", "BILL", bill_id, bill["bill_number"])
             conn.commit()
-    return RedirectResponse("/pos/home", status_code=303)
+    return RedirectResponse("/pos/home?message=Bill+packed+individually#packing", status_code=303)
 
 
 @app.get("/guard/home", response_class=HTMLResponse)
@@ -2961,7 +3298,7 @@ def guard_home(request: Request):
                GROUP BY d.id ORDER BY d.id DESC""", (user["outlet_id"] or 1,)
         ).fetchall()
         incoming = conn.execute(
-            """SELECT 'BILL' entity_type,b.bill_number number,f.shop_name,o.customer_name,1 bill_count,b.created_at
+            """SELECT 'BILL' entity_type,b.bill_number number,f.shop_name,o.customer_name,1 bill_count,b.created_at AS created_at
                FROM bills b JOIN orders o ON o.id=b.order_id JOIN franchisees f ON f.id=b.franchisee_id
                WHERE b.outlet_id=? AND b.status='HANDED_TO_GUARD' AND b.id NOT IN (SELECT bill_id FROM docket_bills)
                UNION ALL
