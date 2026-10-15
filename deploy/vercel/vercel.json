@@ -2,7 +2,7 @@
   "framework": null,
   "rewrites": [
     {
-      "destination": "https://markers-seasons-hub-inspection.trycloudflare.com/:path*",
+      "destination": "https://aapoorti-e-franchise.onrender.com/:path*",
       "source": "/:path*"
     }
   ],
