@@ -104,7 +104,7 @@ with psycopg.connect(url, connect_timeout=20) as target:
         record['auth_version'] = int(record.get('auth_version') or 1) + 1
     insert('users', local_users)
     for record in rows('settings'):
-        if record['key'] in {'profit_credit_mode', 'test_reset_version', 'test_wallet_topup_enabled'}:
+        if record['key'] in {'profit_credit_mode', 'test_reset_version', 'test_wallet_topup_enabled', 'testing_quick_login_until'}:
             continue
         target.execute('INSERT INTO settings(key,value) VALUES(%s,%s) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
                        (record['key'], record['value']))

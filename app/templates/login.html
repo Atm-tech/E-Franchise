@@ -11,7 +11,7 @@
   <link rel="icon" href="/static/app-icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/static/app-icon.svg">
   <title>Aapoorti Partner</title>
-  <link rel="stylesheet" href="/static/style.css?v=13">
+  <link rel="stylesheet" href="/static/style.css?v=24">
 </head>
 <body class="login-bg">
     {% include "_loader.html" %}
@@ -26,7 +26,21 @@
           <label>Password<input name="pin" type="password" required placeholder="Your password" autocomplete="current-password"></label>
           <button type="submit">Sign in</button>
         </form>
-        {% if demo_mode %}<div class="demo-access quick-login"><b>Quick login</b><button type="button" onclick="quickLogin('adm','adm@123')">Admin</button><button type="button" onclick="quickLogin('frn','frn@123')">Franchise</button><button type="button" onclick="quickLogin('pos','pos@123')">POS</button><button type="button" onclick="quickLogin('grd','grd@123')">Guard</button><button type="button" onclick="quickLogin('dlv','dlv@123')">Delivery</button></div>{% endif %}
+        {% if testing_accounts %}
+        <section class="testing-login" aria-label="Quick login">
+          <div class="testing-login-heading"><b>Quick login</b><span>TESTING</span></div>
+          <p>Choose a workspace · available until {{ testing_until }}</p>
+          <div class="testing-login-grid">
+            {% for account in testing_accounts %}
+            <form method="post" action="/testing/quick-login">
+              <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
+              <input type="hidden" name="role" value="{{ account.role }}">
+              <button type="submit"><span aria-hidden="true">{{ account.icon }}</span>{{ account.label }}<small aria-hidden="true">→</small></button>
+            </form>
+            {% endfor %}
+          </div>
+        </section>
+        {% elif demo_mode %}<div class="demo-access quick-login"><b>Quick login</b><button type="button" onclick="quickLogin('adm','adm@123')">Admin</button><button type="button" onclick="quickLogin('frn','frn@123')">Franchise</button><button type="button" onclick="quickLogin('pos','pos@123')">POS</button><button type="button" onclick="quickLogin('grd','grd@123')">Guard</button><button type="button" onclick="quickLogin('dlv','dlv@123')">Delivery</button></div>{% endif %}
       </div>
     </section>
   </main>

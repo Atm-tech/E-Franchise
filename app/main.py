@@ -1454,6 +1454,12 @@ def current_user(request: Request) -> dict[str, Any] | None:
     if not user_id:
         return None
     with get_conn() as conn:
+        testing_until = request.session.get("testing_quick_login_until")
+        if testing_until is not None and (
+            time.time() >= float(testing_until) or not testing_login_deadline(conn.cursor())
+        ):
+            request.session.clear()
+            return None
         row = conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
         if not row or row["status"] != "ACTIVE" or request.session.get("auth_version") != row["auth_version"]:
             return None
@@ -1708,7 +1714,61 @@ def root() -> RedirectResponse:
 
 @app.get("/login", response_class=HTMLResponse)
 def login_page(request: Request, error: str | None = None) -> HTMLResponse:
-    return templates.TemplateResponse("login.html", {"request": request, "error": error, "demo_mode": os.getenv("APP_ENV") != "production" and os.getenv("SEED_DEMO", "1") == "1"})
+    with get_conn() as conn:
+        deadline = testing_login_deadline(conn.cursor())
+        accounts = []
+        if deadline:
+            active = {(r['phone'], r['role']) for r in conn.execute("SELECT phone,role FROM users WHERE status='ACTIVE'").fetchall()}
+            accounts = [{'role': role, 'label': label, 'icon': icon}
+                        for role, (phone, label, icon) in TESTING_LOGIN_ACCOUNTS.items()
+                        if (phone, role) in active]
+    return templates.TemplateResponse("login.html", {"request": request, "error": error, "demo_mode": os.getenv("APP_ENV") != "production" and os.getenv("SEED_DEMO", "1") == "1", "testing_accounts": accounts,
+        "testing_until": datetime.fromtimestamp(deadline, IST).strftime('%d %b, %I:%M %p IST') if deadline else ''})
+
+
+TESTING_LOGIN_ACCOUNTS = {
+    'FRANCHISEE': ('frn', 'Franchise', 'F'),
+    'POS': ('pos', 'Outlet / POS', 'O'),
+    'GUARD': ('grd', 'Guard', 'G'),
+    'DELIVERY': ('dlv', 'Delivery', 'D'),
+    'ADMIN': ('adm', 'Admin', 'A'),
+}
+
+
+def testing_login_deadline(cur) -> float:
+    try:
+        deadline = float(get_setting(cur, 'testing_quick_login_until', '0'))
+    except (TypeError, ValueError):
+        return 0
+    remaining = deadline - time.time()
+    return deadline if 0 < remaining <= 48 * 3600 else 0
+
+
+def start_user_session(request: Request, user, testing_until: float = 0) -> RedirectResponse:
+    request.session.clear()
+    request.session['user_id'] = user['id']
+    request.session['auth_version'] = user['auth_version']
+    request.session['csrf_token'] = secrets.token_urlsafe(32)
+    if testing_until:
+        request.session['testing_quick_login_until'] = testing_until
+    paths = {'ADMIN': '/admin/dashboard', 'FRANCHISEE': '/franchise/home',
+             'POS': '/pos/home', 'GUARD': '/guard/home', 'DELIVERY': '/delivery/home'}
+    return RedirectResponse(paths[user['role']], status_code=303)
+
+
+@app.post('/testing/quick-login', include_in_schema=False)
+def testing_quick_login(request: Request, role: str = Form(...)) -> RedirectResponse:
+    with get_conn() as conn:
+        deadline = testing_login_deadline(conn.cursor())
+        if not deadline or role not in TESTING_LOGIN_ACCOUNTS:
+            raise HTTPException(404, 'Testing access is unavailable')
+        phone = TESTING_LOGIN_ACCOUNTS[role][0]
+        user = conn.execute("SELECT * FROM users WHERE phone=? AND role=? AND status='ACTIVE'", (phone, role)).fetchone()
+        if not user:
+            raise HTTPException(404, 'Testing account is unavailable')
+        if role == 'FRANCHISEE' and not conn.execute("SELECT 1 FROM franchisees WHERE id=? AND status='ACTIVE'", (user['franchisee_id'],)).fetchone():
+            raise HTTPException(403, 'Franchise is inactive')
+        return start_user_session(request, user, deadline)
 
 
 @app.post("/login")
@@ -1727,18 +1787,7 @@ def login(request: Request, phone: str = Form(...), pin: str = Form(...)) -> Red
         if row["role"] == "FRANCHISEE" and not conn.execute("SELECT 1 FROM franchisees WHERE id=? AND status='ACTIVE'", (row["franchisee_id"],)).fetchone():
             return RedirectResponse("/login?error=Account+inactive", status_code=303)
         conn.execute("DELETE FROM login_attempts WHERE login=?", (key,))
-        request.session.clear()
-        request.session["user_id"] = row["id"]
-        request.session["auth_version"] = row["auth_version"]
-        request.session["csrf_token"] = secrets.token_urlsafe(32)
-        role_to_path = {
-            "ADMIN": "/admin/dashboard",
-            "FRANCHISEE": "/franchise/home",
-            "POS": "/pos/home",
-            "GUARD": "/guard/home",
-            "DELIVERY": "/delivery/home",
-        }
-        return RedirectResponse(role_to_path[row["role"]], status_code=303)
+        return start_user_session(request, row)
 
 
 @app.post("/logout")

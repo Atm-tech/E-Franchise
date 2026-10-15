@@ -13,6 +13,15 @@ The Free Render instance sleeps when idle, so profit checks resume when it wakes
 Continuous scheduled checks require an always-on instance. Production disables
 demo top-ups and uses the delayed profit mode.
 
+Temporary public quick login is off by default. To enable a short testing window,
+set `settings.testing_quick_login_until` to a Unix timestamp no more than 48 hours
+ahead (24 hours is recommended). The login page then offers only the five named
+test accounts `adm`, `frn`, `pos`, `grd`, `dlv`; it never embeds their passwords.
+Anyone reaching that page can access those roles during the window. Setting the
+value to `0` disables the buttons and invalidates quick-login sessions immediately;
+expiry also invalidates them. Normal password sign-in is unaffected. Do not enable
+this window when the application contains live business data.
+
 `scripts/migrate_setup_postgres.py` rehearses a clean setup import by default;
 `--commit` applies it. It preserves the bootstrap admin and imports local role
 accounts with unique generated passwords, outlets, franchise configuration,

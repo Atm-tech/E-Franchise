@@ -56,6 +56,26 @@ class OperationsTests(unittest.TestCase):
         self.assertEqual(response.status_code,303,response.text)
         self.assertNotIn('error=',response.headers['location'])
 
+    def test_temporary_quick_login_roles_expiry_and_revocation(self):
+        self.assertEqual(self.post('/testing/quick-login', {'role': 'ADMIN'}).status_code, 404)
+        self.sql("INSERT INTO settings(key,value) VALUES('testing_quick_login_until',?)", (str(time.time()+3600),))
+        page = self.client.get('/login')
+        self.assertIn('action="/testing/quick-login"', page.text)
+        for role, path in [('FRANCHISEE','/franchise/home'), ('POS','/pos/home'),
+                           ('GUARD','/guard/home'), ('DELIVERY','/delivery/home'), ('ADMIN','/admin/dashboard')]:
+            response = self.post('/testing/quick-login', {'role':role})
+            self.assertEqual(response.status_code,303)
+            self.assertEqual(response.headers['location'],path)
+        self.assertEqual(self.post('/testing/quick-login', {'role':'UNKNOWN'}).status_code,404)
+        self.assertEqual(self.client.post('/testing/quick-login',data={'role':'ADMIN'}).status_code,403)
+        self.sql("UPDATE settings SET value='0' WHERE key='testing_quick_login_until'")
+        self.assertEqual(self.client.get('/admin/dashboard',follow_redirects=False).headers['location'],'/login')
+        self.assertNotIn('action="/testing/quick-login"', self.client.get('/login').text)
+        self.assertEqual(self.post('/testing/quick-login', {'role':'ADMIN'}).status_code,404)
+        for deadline in [time.time()-1, time.time()+72*3600]:
+            self.sql("UPDATE settings SET value=? WHERE key='testing_quick_login_until'", (str(deadline),))
+            self.assertEqual(self.post('/testing/quick-login', {'role':'ADMIN'}).status_code,404)
+
     def order(self,mode='DELIVERY_MAN',status='EXECUTED',key=None):
         self.login('frn')
         body={'cart_json':json.dumps([{'id':self.product['id'],'qty':1}]),'customer_name':'Test Buyer','customer_phone':'9999999999','fulfillment_mode':mode,'delivery_type':'DAY','status_mode':status,'distance_km':2,'request_key':key or str(time.time_ns())}
