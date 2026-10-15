@@ -1,5 +1,27 @@
 # Configuration and deployment
 
+## Live deployment — 15 October 2026
+
+E-Franchise runs on Render at `https://aapoorti-e-franchise.onrender.com` from
+`Atm-tech/E-Franchise`. The Vercel entry point
+`https://aapoorti-e-franchise.vercel.app/login` proxies to that backend through
+`deploy/vercel/vercel.json`. PostgreSQL uses only the `e_franchise` schema in the
+existing `aapoorti-db` database. The existing B CONNECT backend is the separate
+`Atm-tech/b2b` repository; the nested local commerce checkout is a different app.
+
+The Free Render instance sleeps when idle, so profit checks resume when it wakes.
+Continuous scheduled checks require an always-on instance. Production disables
+demo top-ups and uses the delayed profit mode.
+
+`scripts/migrate_setup_postgres.py` rehearses a clean setup import by default;
+`--commit` applies it. It preserves the bootstrap admin and imports local role
+accounts with unique generated passwords, outlets, franchise configuration,
+catalogue, pricing rules, target definitions and opening stock. It refuses
+nonempty business tables and excludes orders, customers, balances, financial
+history and test switches. Backups, generated logins and reports belong under
+ignored `data/`; never commit them. Passwords from local demo accounts are not
+valid for the migrated production accounts.
+
 ## Controls added on 7 October 2026
 
 Admin Operations includes fulfilment availability per outlet/franchise, optional/required/auto docket policy and required seal inspection. Admin Pricing selects fixed or per-km distance charge; the existing standard base/instant premium and free-delivery quota still apply. Promotions can target one franchise. Guard must record an intact seal before release under the default policy; a broken seal always blocks release.

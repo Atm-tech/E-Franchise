@@ -46,6 +46,7 @@ def _pg_sql(sql: str, *, returning: bool = False) -> str:
     ignored = bool(re.match(r"INSERT\s+OR\s+IGNORE\s+INTO", sql.strip(), re.I))
     text = re.sub(r"datetime\(\s*'now'\s*\)", "CURRENT_TIMESTAMP", text, flags=re.I)
     text = re.sub(r"\bsubstr\s*\(", "substring(", text, flags=re.I)
+    text = re.sub(r"\bgroup_concat\s*\(", "string_agg(", text, flags=re.I)
     text = re.sub(r"\?", "%s", text)
     if ignored and not re.search(r"\bON\s+CONFLICT\b", text, re.I):
         text = text.rstrip().rstrip(";") + " ON CONFLICT DO NOTHING"
