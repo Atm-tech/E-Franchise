@@ -1820,7 +1820,7 @@ def admin_dashboard(request: Request, message: str | None = None, error: str | N
             ORDER BY 2 DESC LIMIT 20
             """
         ).fetchall()
-        settings = dict(conn.execute("SELECT key, value FROM settings").fetchall())
+        settings = {row["key"]: row["value"] for row in conn.execute("SELECT key, value FROM settings").fetchall()}
         r2_values, r2_missing = r2_config()
 
     return templates.TemplateResponse(
@@ -2539,7 +2539,7 @@ def franchise_home(request: Request, period: str = "month", date_from: str = "",
             "SELECT COALESCE(SUM(amount), 0) total FROM earnings_wallet_ledger WHERE franchisee_id=? AND entry_type='ORDER_COMMISSION'",
             (user["franchisee_id"],),
         ).fetchone()["total"]
-        settings = dict(conn.execute("SELECT key, value FROM settings").fetchall())
+        settings = {row["key"]: row["value"] for row in conn.execute("SELECT key, value FROM settings").fetchall()}
         departments = conn.execute("SELECT DISTINCT department FROM products WHERE status='ACTIVE' ORDER BY department").fetchall()
         free_deliveries_used = conn.execute(
             "SELECT COUNT(1) c FROM orders WHERE franchisee_id=? AND fulfillment_mode='DELIVERY_MAN' AND delivery_cost=0 AND status NOT IN ('CANCELLED','ON_HOLD') AND substr(created_at,1,10)=?",
@@ -2678,7 +2678,7 @@ def customer_bill(request: Request, bill_id: int):
         ).fetchall()
         items = [dict(row) for row in item_rows]
         tax_breakdown = invoice_tax_breakdown(items, float(bill["delivery_charge"] or 0), bill["supply_state_code"] != bill["supplier_state_code"])
-        settings = dict(conn.execute("SELECT key,value FROM settings").fetchall())
+        settings = {row["key"]: row["value"] for row in conn.execute("SELECT key,value FROM settings").fetchall()}
     return_by = bill["commission_available_at"]
     return_policy = f"Customer returns are accepted within {bill['return_window_days']} days after confirmed pickup/delivery."
     if return_by:
