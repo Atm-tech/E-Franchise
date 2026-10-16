@@ -3241,7 +3241,7 @@ def pos_home(request: Request):
         ).fetchall()
         open_bills = conn.execute(
             """
-            SELECT b.*, f.name as franchisee_name, o.fulfillment_mode
+            SELECT b.*, f.name as franchisee_name, o.fulfillment_mode, o.customer_name, o.total
             FROM bills b JOIN franchisees f ON f.id=b.franchisee_id JOIN orders o ON o.id=b.order_id
             WHERE b.outlet_id=? AND NOT EXISTS(SELECT 1 FROM docket_bills db WHERE db.bill_id=b.id) AND b.status IN ('BILLED', 'PACKED_INDIVIDUALLY', 'DOCKET_CREATED', 'HANDED_TO_GUARD', 'AT_GUARD_DESK', 'WEIGHT_CHECK_ALERT', 'WEIGHT_CHECK_PASSED', 'DELIVERY_ASSIGNED')
             ORDER BY b.created_at ASC, b.id ASC
