@@ -428,3 +428,23 @@ input.delivery-slider:focus-visible{outline:3px solid #087957;outline-offset:-3p
 @media(max-width:560px){.next-reward-card{padding:14px}.next-reward-card h2{font-size:19px}}
 
 .milestone-next{padding:16px;margin:14px 0;border:1px solid #bbd4b7;border-radius:14px;background:#f0f8e8}.milestone-next h3{font-size:18px;line-height:1.5;margin:5px 0;color:#175c3c}.milestone-next p{font-size:13px;line-height:1.6;color:#526f55}.milestone-equation{padding:12px;border-radius:9px;background:white;font-size:13px;line-height:1.6;color:#275936}.milestone-next>small{display:block;margin-top:10px;font-size:11px;color:#567157}.milestone-cash-slabs>span{display:grid;gap:6px}.milestone-cash-slabs strong{font-size:16px;color:#175d43}.milestone-how{margin-top:16px;border-top:1px solid #dbe8d8;padding-top:12px}.milestone-how summary{font-size:12px;font-weight:700;color:#335f3a;cursor:pointer}.milestone-how p{font-size:12px;line-height:1.7;color:#65775f}@media(max-width:560px){.milestone-next{padding:12px}.milestone-next h3{font-size:16px}.milestone-cash-slabs{grid-template-columns:1fr}}
+
+/* Home rhythm and clear separation between forecasts and reward potential. */
+.franchise-app .partner-hero{margin-bottom:18px}
+.franchise-app .earnings{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;line-height:1.2;margin-top:8px}
+.franchise-app .earnings small{margin:0;line-height:1.5}
+.franchise-app .hero-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:0;margin-top:26px;padding-top:22px}
+.franchise-app .hero-stats>span{min-width:0;padding:0 18px;line-height:1.6;overflow-wrap:anywhere}
+.franchise-app .hero-stats>span:first-child{padding-left:0}.franchise-app .hero-stats>span:last-child{padding-right:0}
+.franchise-app .hero-stats b{line-height:1.4;margin-bottom:6px}
+.franchise-app .handover-reminder{margin:0 0 18px;padding:16px 20px}
+.franchise-app .quick-strip{margin:0 0 28px;gap:14px}
+#home-view.active{display:flex;flex-direction:column;gap:26px}
+#home-view>.target-card,#home-view>.summary-dashboard{margin:0}
+#home-view>.monthly-projection,#home-view>.milestone-explainer{padding:24px}
+.potential-program-name{margin:7px 0 0;font-size:12px;color:#758775}
+.milestone-explainer .target-numbers{margin:22px 0 18px;gap:12px}
+.milestone-explainer .milestone-next{margin:18px 0;padding:18px}
+.milestone-explainer .target-slabs{gap:12px;margin-top:18px}
+.milestone-explainer .target-slabs>span{padding:14px}
+@media(max-width:760px){.franchise-app .hero-stats{grid-template-columns:repeat(2,minmax(0,1fr));gap:20px 0}.franchise-app .hero-stats>span{padding:0 12px}.franchise-app .hero-stats>span:nth-child(odd){padding-left:0}.franchise-app .hero-stats>span:nth-child(even){border-right:0}.franchise-app .quick-strip{gap:8px;margin-bottom:22px}.franchise-app .quick-strip button{padding:12px 9px;gap:7px}.franchise-app .quick-strip i{width:30px;height:30px;flex-shrink:0}.franchise-app .quick-strip b{font-size:11px}#home-view.active{gap:20px}#home-view>.monthly-projection,#home-view>.milestone-explainer{padding:18px}.milestone-explainer .target-slabs{gap:8px}.milestone-explainer .target-slabs>span{padding:12px}.franchise-app .handover-reminder{padding:14px}}
