@@ -469,4 +469,7 @@ input.delivery-slider:focus-visible{outline:3px solid #087957;outline-offset:-3p
 .function-tray button.active .module-pending-badge{background:#d4e99c;color:#174b32;border-color:#155d43}
 .module-pending-badge[hidden],.guard-tab-count[hidden],.nav-pending-badge[hidden]{display:none!important}
 
-.orders-pending-summary{display:flex;gap:10px;flex-wrap:wrap;margin:0 0 16px}.orders-pending-summary[hidden],.orders-pending-summary button[hidden]{display:none!important}.orders-pending-summary button{display:flex;align-items:center;gap:9px;border:1px solid #d7e5da;border-radius:24px;background:#f0f6ed;padding:8px 12px;color:#356448;font-size:12px;cursor:pointer}.orders-pending-summary b{display:grid;place-items:center;min-width:20px;height:20px;border-radius:12px;background:#deebd2;font-size:11px}
+.outlet-pending-overview{grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+.outlet-pending-overview>button{display:grid;gap:7px;text-align:left;padding:16px;border:1px solid #d7e4da;border-radius:14px;background:white;color:#486454;cursor:pointer}
+.outlet-pending-overview>button:hover{background:#f1f7ee;border-color:#a8c6ae}.outlet-pending-overview span{font-size:12px;font-weight:700}.outlet-pending-overview b{font-size:25px;color:#155d43}.outlet-pending-overview small{font-size:10px;color:#7a8c7e}
+@media(max-width:760px){.outlet-pending-overview{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.outlet-pending-overview>button{padding:12px}}
