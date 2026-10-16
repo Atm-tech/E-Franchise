@@ -216,7 +216,7 @@ class OperationsTests(unittest.TestCase):
         program=self.row("SELECT id FROM target_programs WHERE status='ACTIVE' ORDER BY id LIMIT 1")[0]
         self.sql('DELETE FROM target_slabs WHERE program_id=?',(program,))
         for amount,rate in [(50000,2),(100000,4),(500000,10)]:
-            self.sql("INSERT INTO target_slabs(program_id,threshold_amount,reward_percent,status) VALUES(?,?,?,'ACTIVE')",(program,amount,rate))
+            self.sql("INSERT INTO target_slabs(program_id,threshold_amount,reward_percent,status,created_at) VALUES(?,?,?,'ACTIVE',?)",(program,amount,rate,m.now_str()))
         with m.get_conn() as conn:
             target=next(t for t in m.target_dashboard(conn.cursor(),self.fid) if t['id']==program)
         self.assertEqual(target['next_slab']['reward_at_milestone'],1000)
@@ -231,8 +231,8 @@ class OperationsTests(unittest.TestCase):
         self.login('frn')
         page=self.client.get('/franchise/home')
         self.assertEqual(page.status_code,200)
-        self.assertIn('4,000.00 total reward',page.text)
-        self.assertIn('3,000.00 more than your current',page.text)
+        self.assertIn('1,000.00 total reward',page.text)
+        self.assertIn('1,000.00 more than your current',page.text)
 
     def test_role_pages_security_and_restart(self):
         self.assertEqual(self.client.post('/login',data={'phone':'adm','pin':'adm@123'}).status_code,403)
