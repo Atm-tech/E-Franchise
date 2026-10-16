@@ -3181,7 +3181,7 @@ def pos_home(request: Request):
             LEFT JOIN pick_sessions ps ON ps.order_id=o.id
             LEFT JOIN users pu ON pu.id=ps.user_id
             WHERE o.status='EXECUTED' AND o.outlet_id=? AND o.id NOT IN (SELECT order_id FROM bills)
-            ORDER BY o.id DESC
+            ORDER BY o.created_at ASC, o.id ASC
             """, (user["outlet_id"] or 1,)
         ).fetchall()
         order_items = conn.execute(
@@ -3202,7 +3202,7 @@ def pos_home(request: Request):
             SELECT b.*, f.name as franchisee_name
             FROM bills b JOIN franchisees f ON f.id=b.franchisee_id
             WHERE b.outlet_id=? AND b.status IN ('BILLED', 'PACKED_INDIVIDUALLY', 'DOCKET_CREATED', 'HANDED_TO_GUARD', 'AT_GUARD_DESK', 'WEIGHT_CHECK_ALERT', 'WEIGHT_CHECK_PASSED', 'DELIVERY_ASSIGNED')
-            ORDER BY b.id DESC
+            ORDER BY b.created_at ASC, b.id ASC
             """, (user["outlet_id"] or 1,)
         ).fetchall()
         dockets = conn.execute(
@@ -3211,7 +3211,7 @@ def pos_home(request: Request):
                    group_concat(b.bill_number, ', ') bill_numbers
             FROM dockets d JOIN franchisees f ON f.id=d.franchisee_id
             LEFT JOIN docket_bills db ON db.docket_id=d.id LEFT JOIN bills b ON b.id=db.bill_id
-            WHERE d.outlet_id=? GROUP BY d.id, f.shop_name ORDER BY d.id DESC LIMIT 30
+            WHERE d.outlet_id=? GROUP BY d.id, f.shop_name ORDER BY d.created_at ASC, d.id ASC LIMIT 30
             """, (user["outlet_id"] or 1,)
         ).fetchall()
         outlet = conn.execute("SELECT * FROM outlets WHERE id=?", (user["outlet_id"] or 1,)).fetchone()
