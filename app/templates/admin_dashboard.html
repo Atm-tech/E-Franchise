@@ -7,7 +7,7 @@
 {% if error %}<div class="order-error"><b>Action needed</b><span>{{ error }}</span></div>{% endif %}
 
 <nav class="module-tabs" aria-label="Admin modules">
-  <button class="active" data-admin-tab="overview">Overview</button><button data-admin-tab="franchisees">Franchisees</button><button data-admin-tab="catalog">Catalogue</button><button data-admin-tab="network">Network</button><button data-admin-tab="rules">Rules</button>
+  <button class="active" data-admin-tab="overview" data-pending-count="{{ stats.pending_orders }}">Overview</button><button data-admin-tab="franchisees" data-pending-count="{{ stats.pending_franchisees }}">Franchisees</button><button data-admin-tab="catalog">Catalogue</button><button data-admin-tab="network" data-pending-count="{{ stats.weight_alerts }}">Network</button><button data-admin-tab="rules">Rules</button>
 </nav>
 
 <section class="admin-panel active" id="admin-overview">

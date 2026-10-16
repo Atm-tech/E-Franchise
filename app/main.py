@@ -1821,6 +1821,8 @@ def admin_dashboard(request: Request, message: str | None = None, error: str | N
         release_matured_commissions(conn.cursor())
         conn.commit()
         stats = {
+            "pending_orders": conn.execute("SELECT COUNT(*) FROM orders WHERE status NOT IN ('DELIVERED','CANCELLED','PICKED_BY_FRANCHISEE')").fetchone()[0],
+            "pending_franchisees": conn.execute("SELECT COUNT(*) FROM franchisees WHERE status!='ACTIVE'").fetchone()[0],
             "franchisees": conn.execute("SELECT COUNT(1) c FROM franchisees").fetchone()["c"],
             "products": conn.execute("SELECT COUNT(1) c FROM products WHERE status='ACTIVE'").fetchone()["c"],
             "orders": conn.execute("SELECT COUNT(1) c FROM orders").fetchone()["c"],
