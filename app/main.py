@@ -2527,9 +2527,10 @@ def franchise_home(request: Request, period: str = "month", date_from: str = "",
             product["is_power_pick"] = product["id"] in power_pick_ids
         on_hold_count = conn.execute("SELECT COUNT(*) FROM orders WHERE franchisee_id=? AND status='ON_HOLD'", (user["franchisee_id"],)).fetchone()[0]
         orders = conn.execute(
-            """SELECT o.*, b.id bill_id, b.bill_number FROM orders o
+            """SELECT o.*, b.id bill_id, b.bill_number,
+               (SELECT MAX(e.created_at) FROM order_events e WHERE e.order_id=o.id AND e.status='CUSTOMER_DELIVERED') customer_delivered_at FROM orders o
                LEFT JOIN bills b ON b.order_id=o.id
-               WHERE o.franchisee_id=? ORDER BY o.id DESC""", (user["franchisee_id"],)
+               WHERE o.franchisee_id=? ORDER BY o.created_at ASC, o.id ASC""", (user["franchisee_id"],)
         ).fetchall()
         order_ids = [row["id"] for row in orders]
         reorder_orders = {}
@@ -2559,14 +2560,15 @@ def franchise_home(request: Request, period: str = "month", date_from: str = "",
                 "SEAL_CHECK": "Seal inspection recorded",
                 "WEIGHT_CHECK_PASSED": "Weight check passed",
                 "WEIGHT_CHECK_ALERT": "Weight needs recheck",
-                "PICKED_BY_FRANCHISEE": "Picked up - order complete",
+                "PICKED_BY_FRANCHISEE": "Collected by franchise - customer handover pending",
                 "PICKED_BY_DELIVERY": "Handed to delivery partner",
                 "DELIVERY_ASSIGNED": "Awaiting delivery partner pickup",
                 "ACCEPTED": "Delivery partner accepted the assignment",
                 "PICKED_UP": "Delivery partner collected the parcel",
                 "OUT_FOR_DELIVERY": "Delivery partner is on the way",
                 "ASSIGNED": "Delivery partner assigned",
-                "DELIVERED": "Delivered - order complete",
+                "DELIVERED": "Collected by franchise - customer handover pending",
+                "CUSTOMER_DELIVERED": "Delivered to customer",
                 "RETURN_RECORDED": "Customer return recorded",
                 "DELIVERY_FAILED": "Delivery issue reported",
                 "CANCELLED": "Order cancelled",
@@ -2635,7 +2637,7 @@ def franchise_home(request: Request, period: str = "month", date_from: str = "",
                    1 order_count, o.fulfillment_mode,
                    CASE WHEN EXISTS(SELECT 1 FROM docket_bills db WHERE db.bill_id=b.id) THEN 1 ELSE 0 END is_grouped,
                    (SELECT t.id FROM delivery_tasks t WHERE t.entity_type='BILL' AND t.entity_id=b.id ORDER BY t.id DESC LIMIT 1) task_id
-            FROM bills b JOIN orders o ON o.id=b.order_id WHERE b.franchisee_id=?
+            FROM bills b JOIN orders o ON o.id=b.order_id WHERE b.franchisee_id=? AND NOT EXISTS (SELECT 1 FROM docket_bills grouped WHERE grouped.bill_id=b.id)
             UNION ALL
             SELECT 'DOCKET', d.id entity_id, d.docket_number, d.status, d.expected_weight_kg, d.created_at,
                    'Multiple orders', (SELECT group_concat(b.bill_number, ', ') FROM docket_bills db JOIN bills b ON b.id=db.bill_id WHERE db.docket_id=d.id),
@@ -2664,18 +2666,18 @@ def franchise_home(request: Request, period: str = "month", date_from: str = "",
             "PICKED_BY_FRANCHISEE": "Picked up by franchise",
             "PICKED_BY_DELIVERY": "Handed to delivery partner",
             "OUT_FOR_DELIVERY": "On the way to franchise",
-            "DELIVERED": "Delivered to franchise",
+            "DELIVERED": "Collected at franchise",
         }
         task_stage_labels = {
             "ASSIGNED": "Delivery assigned",
             "ACCEPTED": "Delivery partner accepted",
             "PICKED_UP": "Collected by delivery partner",
             "OUT_FOR_DELIVERY": "On the way to franchise",
-            "DELIVERED": "Delivered to franchise",
+            "DELIVERED": "Collected at franchise",
             "FAILED": "Delivery needs attention",
         }
         dispatches = [dict(row) | {
-            "status_label": ("Picked up by franchise" if row["fulfillment_mode"] == "FRANCHISE_PICKUP" and row["status"] in {"DELIVERED", "PICKED_BY_FRANCHISEE"} else task_stage_labels.get(row["task_status"], dispatch_stage_labels.get(row["status"], row["status"].replace("_", " ").title()))),
+            "status_label": ("Collected from outlet" if row["fulfillment_mode"] == "FRANCHISE_PICKUP" and row["status"] in {"DELIVERED", "PICKED_BY_FRANCHISEE"} else task_stage_labels.get(row["task_status"], dispatch_stage_labels.get(row["status"], row["status"].replace("_", " ").title()))),
             "can_pickup_code": row["fulfillment_mode"] == "FRANCHISE_PICKUP" and row["status"] in {"WEIGHT_CHECK_PASSED", "WEIGHT_CHECK_ALERT"} and (row["entity_type"] == "DOCKET" or not row["is_grouped"]),
             "can_delivery_code": row["fulfillment_mode"] == "DELIVERY_MAN" and row["task_status"] == "OUT_FOR_DELIVERY" and row["task_id"] is not None,
             "dispatch_info": (
@@ -2683,6 +2685,23 @@ def franchise_home(request: Request, period: str = "month", date_from: str = "",
                 else f"Order {row['order_number']} · {row['customer_name']}"
             ),
         } for row in dispatches]
+        docket_contents = {}
+        docket_ids = [item['entity_id'] for item in dispatches if item['entity_type'] == 'DOCKET']
+        if docket_ids:
+            children = conn.execute(
+                f"""SELECT db.docket_id, b.id bill_id, b.bill_number, o.order_number,
+                           o.customer_name, o.customer_phone, o.buyer_address, o.total, o.created_at
+                    FROM docket_bills db JOIN bills b ON b.id=db.bill_id
+                    JOIN orders o ON o.id=b.order_id JOIN dockets d ON d.id=db.docket_id
+                    WHERE db.docket_id IN ({','.join('?' for _ in docket_ids)})
+                      AND d.franchisee_id=? AND b.franchisee_id=? AND o.franchisee_id=?
+                    ORDER BY o.created_at ASC, o.id ASC, b.id ASC""",
+                (*docket_ids, user['franchisee_id'], user['franchisee_id'], user['franchisee_id']),
+            ).fetchall()
+            for child in children:
+                docket_contents.setdefault(child['docket_id'], []).append(dict(child))
+        for dispatch in dispatches:
+            dispatch['bills'] = docket_contents.get(dispatch['entity_id'], []) if dispatch['entity_type'] == 'DOCKET' else []
         def dispatch_priority(item):
             if item['status'] in {'DELIVERED', 'PICKED_BY_FRANCHISEE'} or item['task_status'] == 'DELIVERED':
                 priority = 4
@@ -2931,6 +2950,29 @@ def cancel_held_order(order_id: int, request: Request, request_key: str = Form(.
             add_order_event(cur, order_id, "CANCELLED", "On-hold order cancelled by franchisee", user["id"])
             audit(cur, user, "CANCEL", "ORDER", order_id, order["order_number"])
     return RedirectResponse("/franchise/home?message=order_cancelled#orders", status_code=303)
+
+
+@app.post("/franchise/orders/{order_id}/customer-handover")
+def customer_handover(order_id: int, request: Request, request_key: str = Form(..., min_length=16, max_length=64)):
+    user = require_role(request, "FRANCHISEE")
+    if isinstance(user, RedirectResponse):
+        return user
+    with get_conn() as conn:
+        cur = conn.cursor()
+        # Lock the owned order before checking the event, including on PostgreSQL.
+        cur.execute("UPDATE orders SET updated_at=updated_at WHERE id=? AND franchisee_id=?",
+                    (order_id, user["franchisee_id"]))
+        order = cur.execute("SELECT * FROM orders WHERE id=? AND franchisee_id=?",
+                            (order_id, user["franchisee_id"])).fetchone()
+        if not order:
+            raise HTTPException(404, "Order not found")
+        if order["status"] not in {"DELIVERED", "PICKED_BY_FRANCHISEE"}:
+            raise HTTPException(409, "Collect the order before customer handover")
+        if not cur.execute("SELECT 1 FROM order_events WHERE order_id=? AND status='CUSTOMER_DELIVERED'", (order_id,)).fetchone():
+            if operations.claim_mutation(cur, user, "customer_handover", request_key):
+                add_order_event(cur, order_id, "CUSTOMER_DELIVERED", "Franchise confirmed customer handover", user["id"])
+                audit(cur, user, "CUSTOMER_HANDOVER", "ORDER", order_id, order["order_number"])
+    return RedirectResponse("/franchise/home?message=customer_delivered#orders", status_code=303)
 
 
 @app.post("/franchise/orders/{order_id}/execute")

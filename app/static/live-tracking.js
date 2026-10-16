@@ -197,7 +197,7 @@
   }
 
   async function refreshPartnerTracking() {
-    if (!trackingList || document.hidden || !document.getElementById('dispatch-view')?.classList.contains('active')) return;
+    if (!trackingList || document.hidden || !document.getElementById('orders-view')?.classList.contains('active')) return;
     try {
       const response = await fetch('/franchise/tracking', {cache: 'no-store'});
       if (response.ok) renderTasks((await response.json()).tasks || []);
@@ -205,13 +205,13 @@
   }
 
   document.addEventListener('appviewchange', event => {
-    if (event.detail?.id !== 'dispatch-view') return;
+    if (event.detail?.id !== 'orders-view') return;
     window.setTimeout(() => cards.forEach(view => view.map?.invalidateSize(true)), 120);
     refreshPartnerTracking();
   });
 
   if (trackingList) {
-    if (document.getElementById('dispatch-view')?.classList.contains('active')) refreshPartnerTracking();
+    if (document.getElementById('orders-view')?.classList.contains('active')) refreshPartnerTracking();
     const timer = setInterval(refreshPartnerTracking, 10000);
     window.addEventListener('pagehide', () => clearInterval(timer), {once: true});
     document.addEventListener('visibilitychange', refreshPartnerTracking);

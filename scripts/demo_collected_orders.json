@@ -1,0 +1,752 @@
+[
+  {
+    "order": {
+      "id": 10,
+      "order_number": "DEMO-COLLECT-001",
+      "franchisee_id": 1,
+      "outlet_id": 1,
+      "delivery_type": "DAY",
+      "fulfillment_mode": "FRANCHISE_PICKUP",
+      "status": "DELIVERED",
+      "item_subtotal": 58.0,
+      "commission_total": 0.0,
+      "delivery_charge": 0.0,
+      "total": 58.0,
+      "created_at": "2026-10-16 10:19:11",
+      "customer_name": "Amit Sharma",
+      "customer_phone": "0000000101",
+      "customer_address": "Kotra Sultanabad, Bhopal, Madhya Pradesh 462003",
+      "distance_km": 0.0,
+      "wallet_debit_amount": 0.0,
+      "payable_to_outlet": 0.0,
+      "updated_at": "2026-10-16 14:24:11",
+      "executed_at": "2026-10-16 10:19:11",
+      "request_key": null,
+      "supply_state_code": "23",
+      "supplier_state_code": "23",
+      "wallet_required": 58.0,
+      "delivery_cost": 0.0,
+      "delivery_charge_bearer": "CUSTOMER",
+      "return_window_days": 4,
+      "delivered_at": "2026-10-16 14:24:11",
+      "commission_available_at": null,
+      "commission_released_at": "2026-10-16 14:24:11",
+      "buyer_address": "Demo House 11, Lane 1, Kotra Sultanabad, Bhopal 462003"
+    },
+    "items": [
+      {
+        "id": 22,
+        "order_id": 10,
+        "product_id": 725,
+        "qty": 1,
+        "unit_rsp": 58.0,
+        "line_total": 58.0,
+        "line_weight_kg": 1.0,
+        "commission_per_unit": 0.0,
+        "line_commission": 0.0,
+        "selected_weight_kg": 1.0,
+        "product_name_snapshot": "Dubraj Rice (Unbranded)",
+        "hsn_code": "10063010",
+        "gst_rate": 0.0,
+        "taxable_value": 58.0,
+        "gst_amount": 0.0,
+        "slab_eligible": 0,
+        "pack_label": "1 kg",
+        "sku_code": "35004"
+      }
+    ],
+    "bill": {
+      "id": 8,
+      "bill_number": "DEMO-BILL-001",
+      "order_id": 10,
+      "franchisee_id": 1,
+      "outlet_id": 1,
+      "status": "DELIVERED",
+      "expected_weight_kg": 1.0,
+      "actual_weight_kg": 1.0,
+      "weight_variance_kg": 0.0,
+      "weight_check_status": "PASS",
+      "created_at": "2026-10-16 10:19:11",
+      "pack_status": "PACKED",
+      "updated_at": "2026-10-16 14:24:11",
+      "seal_status": "INTACT",
+      "seal_notes": "Local demo data",
+      "seal_checked_by": null,
+      "seal_checked_at": "2026-10-16 14:24:11"
+    },
+    "events": [
+      {
+        "id": 49,
+        "order_id": 10,
+        "status": "EXECUTED",
+        "notes": "Local demo / customer handover pending",
+        "created_by": 2,
+        "created_at": "2026-10-16 10:19:11"
+      },
+      {
+        "id": 50,
+        "order_id": 10,
+        "status": "BILLED",
+        "notes": "Local demo / customer handover pending",
+        "created_by": 2,
+        "created_at": "2026-10-16 10:20:11"
+      },
+      {
+        "id": 51,
+        "order_id": 10,
+        "status": "PACKED_INDIVIDUALLY",
+        "notes": "Local demo / customer handover pending",
+        "created_by": 2,
+        "created_at": "2026-10-16 10:21:11"
+      },
+      {
+        "id": 52,
+        "order_id": 10,
+        "status": "HANDED_TO_GUARD",
+        "notes": "Local demo / customer handover pending",
+        "created_by": 2,
+        "created_at": "2026-10-16 10:22:11"
+      },
+      {
+        "id": 53,
+        "order_id": 10,
+        "status": "AT_GUARD_DESK",
+        "notes": "Local demo / customer handover pending",
+        "created_by": 2,
+        "created_at": "2026-10-16 10:23:11"
+      },
+      {
+        "id": 54,
+        "order_id": 10,
+        "status": "SEAL_CHECK",
+        "notes": "Local demo / customer handover pending",
+        "created_by": 2,
+        "created_at": "2026-10-16 10:24:11"
+      },
+      {
+        "id": 55,
+        "order_id": 10,
+        "status": "WEIGHT_CHECK_PASSED",
+        "notes": "Local demo / customer handover pending",
+        "created_by": 2,
+        "created_at": "2026-10-16 10:25:11"
+      },
+      {
+        "id": 56,
+        "order_id": 10,
+        "status": "PICKED_BY_FRANCHISEE",
+        "notes": "Local demo / customer handover pending",
+        "created_by": 2,
+        "created_at": "2026-10-16 14:24:11"
+      },
+      {
+        "id": 57,
+        "order_id": 10,
+        "status": "DELIVERED",
+        "notes": "Local demo / customer handover pending",
+        "created_by": 2,
+        "created_at": "2026-10-16 14:24:11"
+      }
+    ]
+  },
+  {
+    "order": {
+      "id": 11,
+      "order_number": "DEMO-COLLECT-002",
+      "franchisee_id": 1,
+      "outlet_id": 1,
+      "delivery_type": "DAY",
+      "fulfillment_mode": "FRANCHISE_PICKUP",
+      "status": "DELIVERED",
+      "item_subtotal": 116.0,
+      "commission_total": 0.0,
+      "delivery_charge": 0.0,
+      "total": 116.0,
+      "created_at": "2026-10-16 11:19:11",
+      "customer_name": "Neha Verma",
+      "customer_phone": "0000000102",
+      "customer_address": "Kotra Sultanabad, Bhopal, Madhya Pradesh 462003",
+      "distance_km": 0.0,
+      "wallet_debit_amount": 0.0,
+      "payable_to_outlet": 0.0,
+      "updated_at": "2026-10-16 14:29:11",
+      "executed_at": "2026-10-16 11:19:11",
+      "request_key": null,
+      "supply_state_code": "23",
+      "supplier_state_code": "23",
+      "wallet_required": 116.0,
+      "delivery_cost": 0.0,
+      "delivery_charge_bearer": "CUSTOMER",
+      "return_window_days": 4,
+      "delivered_at": "2026-10-16 14:29:11",
+      "commission_available_at": null,
+      "commission_released_at": "2026-10-16 14:29:11",
+      "buyer_address": "Demo House 12, Lane 2, Kotra Sultanabad, Bhopal 462003"
+    },
+    "items": [
+      {
+        "id": 23,
+        "order_id": 11,
+        "product_id": 725,
+        "qty": 2,
+        "unit_rsp": 58.0,
+        "line_total": 116.0,
+        "line_weight_kg": 2.0,
+        "commission_per_unit": 0.0,
+        "line_commission": 0.0,
+        "selected_weight_kg": 1.0,
+        "product_name_snapshot": "Dubraj Rice (Unbranded)",
+        "hsn_code": "10063010",
+        "gst_rate": 0.0,
+        "taxable_value": 116.0,
+        "gst_amount": 0.0,
+        "slab_eligible": 0,
+        "pack_label": "1 kg",
+        "sku_code": "35004"
+      }
+    ],
+    "bill": {
+      "id": 9,
+      "bill_number": "DEMO-BILL-002",
+      "order_id": 11,
+      "franchisee_id": 1,
+      "outlet_id": 1,
+      "status": "DELIVERED",
+      "expected_weight_kg": 2.0,
+      "actual_weight_kg": 2.0,
+      "weight_variance_kg": 0.0,
+      "weight_check_status": "PASS",
+      "created_at": "2026-10-16 11:19:11",
+      "pack_status": "PACKED",
+      "updated_at": "2026-10-16 14:29:11",
+      "seal_status": "INTACT",
+      "seal_notes": "Local demo data",
+      "seal_checked_by": null,
+      "seal_checked_at": "2026-10-16 14:29:11"
+    },
+    "events": [
+      {
+        "id": 58,
+        "order_id": 11,
+        "status": "EXECUTED",
+        "notes": "Local demo / customer handover pending",
+        "created_by": 2,
+        "created_at": "2026-10-16 11:19:11"
+      },
+      {
+        "id": 59,
+        "order_id": 11,
+        "status": "BILLED",
+        "notes": "Local demo / customer handover pending",
+        "created_by": 2,
+        "created_at": "2026-10-16 11:20:11"
+      },
+      {
+        "id": 60,
+        "order_id": 11,
+        "status": "PACKED_INDIVIDUALLY",
+        "notes": "Local demo / customer handover pending",
+        "created_by": 2,
+        "created_at": "2026-10-16 11:21:11"
+      },
+      {
+        "id": 61,
+        "order_id": 11,
+        "status": "HANDED_TO_GUARD",
+        "notes": "Local demo / customer handover pending",
+        "created_by": 2,
+        "created_at": "2026-10-16 11:22:11"
+      },
+      {
+        "id": 62,
+        "order_id": 11,
+        "status": "AT_GUARD_DESK",
+        "notes": "Local demo / customer handover pending",
+        "created_by": 2,
+        "created_at": "2026-10-16 11:23:11"
+      },
+      {
+        "id": 63,
+        "order_id": 11,
+        "status": "SEAL_CHECK",
+        "notes": "Local demo / customer handover pending",
+        "created_by": 2,
+        "created_at": "2026-10-16 11:24:11"
+      },
+      {
+        "id": 64,
+        "order_id": 11,
+        "status": "WEIGHT_CHECK_PASSED",
+        "notes": "Local demo / customer handover pending",
+        "created_by": 2,
+        "created_at": "2026-10-16 11:25:11"
+      },
+      {
+        "id": 65,
+        "order_id": 11,
+        "status": "PICKED_BY_FRANCHISEE",
+        "notes": "Local demo / customer handover pending",
+        "created_by": 2,
+        "created_at": "2026-10-16 14:29:11"
+      },
+      {
+        "id": 66,
+        "order_id": 11,
+        "status": "DELIVERED",
+        "notes": "Local demo / customer handover pending",
+        "created_by": 2,
+        "created_at": "2026-10-16 14:29:11"
+      }
+    ]
+  },
+  {
+    "order": {
+      "id": 12,
+      "order_number": "DEMO-COLLECT-003",
+      "franchisee_id": 1,
+      "outlet_id": 1,
+      "delivery_type": "DAY",
+      "fulfillment_mode": "FRANCHISE_PICKUP",
+      "status": "DELIVERED",
+      "item_subtotal": 174.0,
+      "commission_total": 0.0,
+      "delivery_charge": 0.0,
+      "total": 174.0,
+      "created_at": "2026-10-16 12:19:11",
+      "customer_name": "Rahul Singh",
+      "customer_phone": "0000000103",
+      "customer_address": "Kotra Sultanabad, Bhopal, Madhya Pradesh 462003",
+      "distance_km": 0.0,
+      "wallet_debit_amount": 0.0,
+      "payable_to_outlet": 0.0,
+      "updated_at": "2026-10-16 14:34:11",
+      "executed_at": "2026-10-16 12:19:11",
+      "request_key": null,
+      "supply_state_code": "23",
+      "supplier_state_code": "23",
+      "wallet_required": 174.0,
+      "delivery_cost": 0.0,
+      "delivery_charge_bearer": "CUSTOMER",
+      "return_window_days": 4,
+      "delivered_at": "2026-10-16 14:34:11",
+      "commission_available_at": null,
+      "commission_released_at": "2026-10-16 14:34:11",
+      "buyer_address": "Demo House 13, Lane 3, Kotra Sultanabad, Bhopal 462003"
+    },
+    "items": [
+      {
+        "id": 24,
+        "order_id": 12,
+        "product_id": 725,
+        "qty": 3,
+        "unit_rsp": 58.0,
+        "line_total": 174.0,
+        "line_weight_kg": 3.0,
+        "commission_per_unit": 0.0,
+        "line_commission": 0.0,
+        "selected_weight_kg": 1.0,
+        "product_name_snapshot": "Dubraj Rice (Unbranded)",
+        "hsn_code": "10063010",
+        "gst_rate": 0.0,
+        "taxable_value": 174.0,
+        "gst_amount": 0.0,
+        "slab_eligible": 0,
+        "pack_label": "1 kg",
+        "sku_code": "35004"
+      }
+    ],
+    "bill": {
+      "id": 10,
+      "bill_number": "DEMO-BILL-003",
+      "order_id": 12,
+      "franchisee_id": 1,
+      "outlet_id": 1,
+      "status": "DELIVERED",
+      "expected_weight_kg": 3.0,
+      "actual_weight_kg": 3.0,
+      "weight_variance_kg": 0.0,
+      "weight_check_status": "PASS",
+      "created_at": "2026-10-16 12:19:11",
+      "pack_status": "PACKED",
+      "updated_at": "2026-10-16 14:34:11",
+      "seal_status": "INTACT",
+      "seal_notes": "Local demo data",
+      "seal_checked_by": null,
+      "seal_checked_at": "2026-10-16 14:34:11"
+    },
+    "events": [
+      {
+        "id": 67,
+        "order_id": 12,
+        "status": "EXECUTED",
+        "notes": "Local demo / customer handover pending",
+        "created_by": 2,
+        "created_at": "2026-10-16 12:19:11"
+      },
+      {
+        "id": 68,
+        "order_id": 12,
+        "status": "BILLED",
+        "notes": "Local demo / customer handover pending",
+        "created_by": 2,
+        "created_at": "2026-10-16 12:20:11"
+      },
+      {
+        "id": 69,
+        "order_id": 12,
+        "status": "PACKED_INDIVIDUALLY",
+        "notes": "Local demo / customer handover pending",
+        "created_by": 2,
+        "created_at": "2026-10-16 12:21:11"
+      },
+      {
+        "id": 70,
+        "order_id": 12,
+        "status": "HANDED_TO_GUARD",
+        "notes": "Local demo / customer handover pending",
+        "created_by": 2,
+        "created_at": "2026-10-16 12:22:11"
+      },
+      {
+        "id": 71,
+        "order_id": 12,
+        "status": "AT_GUARD_DESK",
+        "notes": "Local demo / customer handover pending",
+        "created_by": 2,
+        "created_at": "2026-10-16 12:23:11"
+      },
+      {
+        "id": 72,
+        "order_id": 12,
+        "status": "SEAL_CHECK",
+        "notes": "Local demo / customer handover pending",
+        "created_by": 2,
+        "created_at": "2026-10-16 12:24:11"
+      },
+      {
+        "id": 73,
+        "order_id": 12,
+        "status": "WEIGHT_CHECK_PASSED",
+        "notes": "Local demo / customer handover pending",
+        "created_by": 2,
+        "created_at": "2026-10-16 12:25:11"
+      },
+      {
+        "id": 74,
+        "order_id": 12,
+        "status": "PICKED_BY_FRANCHISEE",
+        "notes": "Local demo / customer handover pending",
+        "created_by": 2,
+        "created_at": "2026-10-16 14:34:11"
+      },
+      {
+        "id": 75,
+        "order_id": 12,
+        "status": "DELIVERED",
+        "notes": "Local demo / customer handover pending",
+        "created_by": 2,
+        "created_at": "2026-10-16 14:34:11"
+      }
+    ]
+  },
+  {
+    "order": {
+      "id": 13,
+      "order_number": "DEMO-COLLECT-004",
+      "franchisee_id": 1,
+      "outlet_id": 1,
+      "delivery_type": "DAY",
+      "fulfillment_mode": "FRANCHISE_PICKUP",
+      "status": "DELIVERED",
+      "item_subtotal": 232.0,
+      "commission_total": 0.0,
+      "delivery_charge": 0.0,
+      "total": 232.0,
+      "created_at": "2026-10-16 13:19:11",
+      "customer_name": "Pooja Patel",
+      "customer_phone": "0000000104",
+      "customer_address": "Kotra Sultanabad, Bhopal, Madhya Pradesh 462003",
+      "distance_km": 0.0,
+      "wallet_debit_amount": 0.0,
+      "payable_to_outlet": 0.0,
+      "updated_at": "2026-10-16 14:39:11",
+      "executed_at": "2026-10-16 13:19:11",
+      "request_key": null,
+      "supply_state_code": "23",
+      "supplier_state_code": "23",
+      "wallet_required": 232.0,
+      "delivery_cost": 0.0,
+      "delivery_charge_bearer": "CUSTOMER",
+      "return_window_days": 4,
+      "delivered_at": "2026-10-16 14:39:11",
+      "commission_available_at": null,
+      "commission_released_at": "2026-10-16 14:39:11",
+      "buyer_address": "Demo House 14, Lane 4, Kotra Sultanabad, Bhopal 462003"
+    },
+    "items": [
+      {
+        "id": 25,
+        "order_id": 13,
+        "product_id": 725,
+        "qty": 4,
+        "unit_rsp": 58.0,
+        "line_total": 232.0,
+        "line_weight_kg": 4.0,
+        "commission_per_unit": 0.0,
+        "line_commission": 0.0,
+        "selected_weight_kg": 1.0,
+        "product_name_snapshot": "Dubraj Rice (Unbranded)",
+        "hsn_code": "10063010",
+        "gst_rate": 0.0,
+        "taxable_value": 232.0,
+        "gst_amount": 0.0,
+        "slab_eligible": 0,
+        "pack_label": "1 kg",
+        "sku_code": "35004"
+      }
+    ],
+    "bill": {
+      "id": 11,
+      "bill_number": "DEMO-BILL-004",
+      "order_id": 13,
+      "franchisee_id": 1,
+      "outlet_id": 1,
+      "status": "DELIVERED",
+      "expected_weight_kg": 4.0,
+      "actual_weight_kg": 4.0,
+      "weight_variance_kg": 0.0,
+      "weight_check_status": "PASS",
+      "created_at": "2026-10-16 13:19:11",
+      "pack_status": "PACKED",
+      "updated_at": "2026-10-16 14:39:11",
+      "seal_status": "INTACT",
+      "seal_notes": "Local demo data",
+      "seal_checked_by": null,
+      "seal_checked_at": "2026-10-16 14:39:11"
+    },
+    "events": [
+      {
+        "id": 76,
+        "order_id": 13,
+        "status": "EXECUTED",
+        "notes": "Local demo / customer handover pending",
+        "created_by": 2,
+        "created_at": "2026-10-16 13:19:11"
+      },
+      {
+        "id": 77,
+        "order_id": 13,
+        "status": "BILLED",
+        "notes": "Local demo / customer handover pending",
+        "created_by": 2,
+        "created_at": "2026-10-16 13:20:11"
+      },
+      {
+        "id": 78,
+        "order_id": 13,
+        "status": "PACKED_INDIVIDUALLY",
+        "notes": "Local demo / customer handover pending",
+        "created_by": 2,
+        "created_at": "2026-10-16 13:21:11"
+      },
+      {
+        "id": 79,
+        "order_id": 13,
+        "status": "HANDED_TO_GUARD",
+        "notes": "Local demo / customer handover pending",
+        "created_by": 2,
+        "created_at": "2026-10-16 13:22:11"
+      },
+      {
+        "id": 80,
+        "order_id": 13,
+        "status": "AT_GUARD_DESK",
+        "notes": "Local demo / customer handover pending",
+        "created_by": 2,
+        "created_at": "2026-10-16 13:23:11"
+      },
+      {
+        "id": 81,
+        "order_id": 13,
+        "status": "SEAL_CHECK",
+        "notes": "Local demo / customer handover pending",
+        "created_by": 2,
+        "created_at": "2026-10-16 13:24:11"
+      },
+      {
+        "id": 82,
+        "order_id": 13,
+        "status": "WEIGHT_CHECK_PASSED",
+        "notes": "Local demo / customer handover pending",
+        "created_by": 2,
+        "created_at": "2026-10-16 13:25:11"
+      },
+      {
+        "id": 83,
+        "order_id": 13,
+        "status": "PICKED_BY_FRANCHISEE",
+        "notes": "Local demo / customer handover pending",
+        "created_by": 2,
+        "created_at": "2026-10-16 14:39:11"
+      },
+      {
+        "id": 84,
+        "order_id": 13,
+        "status": "DELIVERED",
+        "notes": "Local demo / customer handover pending",
+        "created_by": 2,
+        "created_at": "2026-10-16 14:39:11"
+      }
+    ]
+  },
+  {
+    "order": {
+      "id": 14,
+      "order_number": "DEMO-COLLECT-005",
+      "franchisee_id": 1,
+      "outlet_id": 1,
+      "delivery_type": "DAY",
+      "fulfillment_mode": "FRANCHISE_PICKUP",
+      "status": "DELIVERED",
+      "item_subtotal": 290.0,
+      "commission_total": 0.0,
+      "delivery_charge": 0.0,
+      "total": 290.0,
+      "created_at": "2026-10-16 14:19:11",
+      "customer_name": "Suresh Gupta",
+      "customer_phone": "0000000105",
+      "customer_address": "Kotra Sultanabad, Bhopal, Madhya Pradesh 462003",
+      "distance_km": 0.0,
+      "wallet_debit_amount": 0.0,
+      "payable_to_outlet": 0.0,
+      "updated_at": "2026-10-16 14:44:11",
+      "executed_at": "2026-10-16 14:19:11",
+      "request_key": null,
+      "supply_state_code": "23",
+      "supplier_state_code": "23",
+      "wallet_required": 290.0,
+      "delivery_cost": 0.0,
+      "delivery_charge_bearer": "CUSTOMER",
+      "return_window_days": 4,
+      "delivered_at": "2026-10-16 14:44:11",
+      "commission_available_at": null,
+      "commission_released_at": "2026-10-16 14:44:11",
+      "buyer_address": "Demo House 15, Lane 5, Kotra Sultanabad, Bhopal 462003"
+    },
+    "items": [
+      {
+        "id": 26,
+        "order_id": 14,
+        "product_id": 725,
+        "qty": 5,
+        "unit_rsp": 58.0,
+        "line_total": 290.0,
+        "line_weight_kg": 5.0,
+        "commission_per_unit": 0.0,
+        "line_commission": 0.0,
+        "selected_weight_kg": 1.0,
+        "product_name_snapshot": "Dubraj Rice (Unbranded)",
+        "hsn_code": "10063010",
+        "gst_rate": 0.0,
+        "taxable_value": 290.0,
+        "gst_amount": 0.0,
+        "slab_eligible": 0,
+        "pack_label": "1 kg",
+        "sku_code": "35004"
+      }
+    ],
+    "bill": {
+      "id": 12,
+      "bill_number": "DEMO-BILL-005",
+      "order_id": 14,
+      "franchisee_id": 1,
+      "outlet_id": 1,
+      "status": "DELIVERED",
+      "expected_weight_kg": 5.0,
+      "actual_weight_kg": 5.0,
+      "weight_variance_kg": 0.0,
+      "weight_check_status": "PASS",
+      "created_at": "2026-10-16 14:19:11",
+      "pack_status": "PACKED",
+      "updated_at": "2026-10-16 14:44:11",
+      "seal_status": "INTACT",
+      "seal_notes": "Local demo data",
+      "seal_checked_by": null,
+      "seal_checked_at": "2026-10-16 14:44:11"
+    },
+    "events": [
+      {
+        "id": 85,
+        "order_id": 14,
+        "status": "EXECUTED",
+        "notes": "Local demo / customer handover pending",
+        "created_by": 2,
+        "created_at": "2026-10-16 14:19:11"
+      },
+      {
+        "id": 86,
+        "order_id": 14,
+        "status": "BILLED",
+        "notes": "Local demo / customer handover pending",
+        "created_by": 2,
+        "created_at": "2026-10-16 14:20:11"
+      },
+      {
+        "id": 87,
+        "order_id": 14,
+        "status": "PACKED_INDIVIDUALLY",
+        "notes": "Local demo / customer handover pending",
+        "created_by": 2,
+        "created_at": "2026-10-16 14:21:11"
+      },
+      {
+        "id": 88,
+        "order_id": 14,
+        "status": "HANDED_TO_GUARD",
+        "notes": "Local demo / customer handover pending",
+        "created_by": 2,
+        "created_at": "2026-10-16 14:22:11"
+      },
+      {
+        "id": 89,
+        "order_id": 14,
+        "status": "AT_GUARD_DESK",
+        "notes": "Local demo / customer handover pending",
+        "created_by": 2,
+        "created_at": "2026-10-16 14:23:11"
+      },
+      {
+        "id": 90,
+        "order_id": 14,
+        "status": "SEAL_CHECK",
+        "notes": "Local demo / customer handover pending",
+        "created_by": 2,
+        "created_at": "2026-10-16 14:24:11"
+      },
+      {
+        "id": 91,
+        "order_id": 14,
+        "status": "WEIGHT_CHECK_PASSED",
+        "notes": "Local demo / customer handover pending",
+        "created_by": 2,
+        "created_at": "2026-10-16 14:25:11"
+      },
+      {
+        "id": 92,
+        "order_id": 14,
+        "status": "PICKED_BY_FRANCHISEE",
+        "notes": "Local demo / customer handover pending",
+        "created_by": 2,
+        "created_at": "2026-10-16 14:44:11"
+      },
+      {
+        "id": 93,
+        "order_id": 14,
+        "status": "DELIVERED",
+        "notes": "Local demo / customer handover pending",
+        "created_by": 2,
+        "created_at": "2026-10-16 14:44:11"
+      }
+    ]
+  }
+]

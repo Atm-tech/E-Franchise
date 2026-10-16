@@ -15,7 +15,8 @@ class OrderJourneyTests(unittest.TestCase):
         self.assertTrue(journey[0]['completed'])
         self.assertFalse(journey[0]['connector_completed'])
         self.assertTrue(all(not step['completed'] for step in journey[1:]))
-        self.assertEqual(journey[-1]['status'], 'PICKED_BY_FRANCHISEE')
+        self.assertEqual(journey[-2]['status'], 'PICKED_BY_FRANCHISEE')
+        self.assertEqual(journey[-1]['status'], 'CUSTOMER_DELIVERED')
         self.assertTrue(all(not step['created_at'] for step in journey[1:]))
 
     def test_progress_fills_only_through_current_stage(self):
@@ -28,8 +29,16 @@ class OrderJourneyTests(unittest.TestCase):
 
     def test_pickup_completion_has_one_final_step(self):
         journey = self.journey(['EXECUTED', 'PICKED_BY_FRANCHISEE', 'DELIVERED'])
-        self.assertTrue(all(step['completed'] for step in journey))
-        self.assertEqual(len([step for step in journey if 'order complete' in step['title']]), 1)
+        self.assertTrue(all(step['completed'] for step in journey[:-1]))
+        self.assertFalse(journey[-1]['completed'])
+        self.assertEqual(journey[-2]['title'], 'Collected by franchise - customer handover pending')
+        self.assertFalse(any('order complete' in step['title'] for step in journey))
+
+    def test_customer_delivery_is_separate_from_collection(self):
+        journey = self.journey(['EXECUTED', 'DELIVERED', 'CUSTOMER_DELIVERED'])
+        self.assertTrue(journey[-1]['completed'])
+        self.assertTrue(journey[-1]['current'])
+        self.assertEqual(journey[-1]['title'], 'Delivered to customer')
 
     def test_delivery_path_and_required_docket_are_visible_in_advance(self):
         journey = self.journey(['EXECUTED'], 'DELIVERY_MAN', require_docket=True)

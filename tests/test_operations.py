@@ -122,6 +122,52 @@ class OperationsTests(unittest.TestCase):
             self.assertEqual(self.post('/delivery/tasks',{'task_id':task['id'],'status':state}).status_code,303)
         return order,bill,task
 
+    def test_customer_handover_requires_collection_is_owned_and_idempotent(self):
+        outlet = self.row('SELECT outlet_id FROM franchisees WHERE id=?', (self.fid,))[0]
+        self.sql("INSERT INTO inventory_balances(outlet_id,product_id,on_hand,reserved,updated_at) VALUES(?,?,20,0,?) ON CONFLICT(outlet_id,product_id) DO UPDATE SET on_hand=20,reserved=0", (outlet,self.product['id'],m.now_str()))
+        order = self.order()
+        self.login('frn')
+        path = f"/franchise/orders/{order['id']}/customer-handover"
+        self.assertEqual(self.post(path).status_code, 409)
+        self.assertEqual(self.post('/franchise/orders/999999/customer-handover').status_code, 404)
+        self.sql("UPDATE orders SET status='DELIVERED' WHERE id=?", (order['id'],))
+        page = self.client.get('/franchise/home')
+        self.assertEqual(page.status_code, 200)
+        self.assertIn('Swipe to deliver &rarr;', page.text)
+        self.assertIn('Customer address: Address not provided', page.text)
+        self.assertIn('Customer handover pending', page.text)
+        self.assertEqual(self.post(path).status_code, 303)
+        self.assertEqual(self.post(path).status_code, 303)
+        self.assertEqual(self.row("SELECT COUNT(*) FROM order_events WHERE order_id=? AND status='CUSTOMER_DELIVERED'", (order['id'],))[0], 1)
+        self.assertEqual(self.row('SELECT status FROM orders WHERE id=?', (order['id'],))[0], 'DELIVERED')
+        page = self.client.get('/franchise/home')
+        self.assertNotIn('class="delivery-slider"', page.text)
+        self.assertIn('Delivered to customer:', page.text)
+        with patch.object(m, 'require_role', return_value={'franchisee_id': self.fid + 999, 'id': 999}):
+            self.assertEqual(self.post(path).status_code, 404)
+        self.login('pos')
+        self.assertEqual(self.post(path).headers['location'], '/login')
+
+    def test_franchise_docket_expands_owned_bills(self):
+        outlet = self.row('SELECT outlet_id FROM franchisees WHERE id=?', (self.fid,))[0]
+        self.sql("INSERT INTO inventory_balances(outlet_id,product_id,on_hand,reserved,updated_at) VALUES(?,?,20,0,?) ON CONFLICT(outlet_id,product_id) DO UPDATE SET on_hand=20,reserved=0", (outlet,self.product['id'],m.now_str()))
+        order = self.order(mode='FRANCHISE_PICKUP')
+        self.sql("INSERT INTO bills(bill_number,order_id,franchisee_id,outlet_id,status,created_at) VALUES('TEST-EXPAND-BILL',?,?,?,'WEIGHT_CHECK_PASSED',?)", (order['id'], self.fid, outlet, m.now_str()))
+        bill_id = self.row("SELECT id FROM bills WHERE bill_number='TEST-EXPAND-BILL'")[0]
+        self.sql("INSERT INTO dockets(docket_number,franchisee_id,outlet_id,status,created_at) VALUES('TEST-EXPAND-DOCKET',?,?,'WEIGHT_CHECK_PASSED',?)", (self.fid, outlet,m.now_str()))
+        did = self.row("SELECT id FROM dockets WHERE docket_number='TEST-EXPAND-DOCKET'")[0]
+        self.sql('INSERT INTO docket_bills(docket_id,bill_id) VALUES(?,?)', (did,bill_id))
+        self.login('frn')
+        page = self.client.get('/franchise/home')
+        self.assertEqual(page.status_code,200)
+        # Inspect the full page because the live tracking panel is a nested section.
+        self.assertIn('View all 1 bills',page.text)
+        self.assertIn('TEST-EXPAND-DOCKET',page.text)
+        self.assertIn(f'href="/franchise/bills/{bill_id}"',page.text)
+        self.assertIn('class="docket-bill-customer"',page.text)
+        self.assertIn('Generate pickup code',page.text)
+        self.assertEqual(page.text.count('data-dispatch-status='),1)
+
     def test_role_pages_security_and_restart(self):
         self.assertEqual(self.client.post('/login',data={'phone':'adm','pin':'adm@123'}).status_code,403)
         for role,path in [('adm','/admin/dashboard'),('frn','/franchise/home'),('pos','/pos/home'),('grd','/guard/home'),('dlv','/delivery/home')]:

@@ -16,13 +16,14 @@ def build_order_journey(order, events, *, require_seal=True, require_docket=Fals
         steps.append(('SEAL_CHECK', 'Seal inspection recorded'))
     steps.append(('WEIGHT_CHECK_PASSED', 'Weight check passed'))
     if pickup:
-        steps.append(('PICKED_BY_FRANCHISEE', 'Picked up by franchise · order complete'))
+        steps.append(('PICKED_BY_FRANCHISEE', 'Collected by franchise - customer handover pending'))
     else:
         steps += [('DELIVERY_ASSIGNED', 'Delivery partner assigned'),
                   ('ACCEPTED', 'Delivery partner accepted the assignment'),
                   ('PICKED_UP', 'Delivery partner collected the parcel'),
                   ('OUT_FOR_DELIVERY', 'Delivery partner is on the way'),
-                  ('DELIVERED', 'Delivered to franchise · order complete')]
+                  ('DELIVERED', 'Collected by franchise - customer handover pending')]
+    steps.append(('CUSTOMER_DELIVERED', 'Delivered to customer'))
     positions = {status: index for index, (status, _) in enumerate(steps)}
     aliases = {'DELIVERED': 'PICKED_BY_FRANCHISEE'} if pickup else {
         'ASSIGNED': 'DELIVERY_ASSIGNED', 'PICKED_BY_DELIVERY': 'PICKED_UP'}
