@@ -27,6 +27,7 @@ from app.security import RequestProtection, hash_password, verify_password, sess
 from app.database import PostgresConnection
 from app import operations, dispatch_rules
 from app.projections import monthly_projection
+from app.order_journey import build_order_journey
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -2580,6 +2581,11 @@ def franchise_home(request: Request, period: str = "month", date_from: str = "",
                     "notes": (event["notes"] or "").strip(),
                     "created_at": event["created_at"] or "",
                 })
+        journey_seal_required = get_setting(conn.cursor(), 'require_seal_check', '1') == '1'
+        journey_docket_required = get_setting(conn.cursor(), 'docket_policy', 'OPTIONAL') in {'REQUIRED', 'AUTO'}
+        order_journeys = {order['id']: build_order_journey(order, order_timelines[order['id']],
+            require_seal=journey_seal_required, require_docket=journey_docket_required)
+            for order in orders}
         dockets = conn.execute(
             "SELECT * FROM dockets WHERE franchisee_id=? ORDER BY id DESC LIMIT 10", (user["franchisee_id"],)
         ).fetchall()
@@ -2692,7 +2698,7 @@ def franchise_home(request: Request, period: str = "month", date_from: str = "",
         "franchise_home.html",
         {"request": request, "user": user, "franchise": franchise, "products": products, "orders": orders,
          "dockets": dockets, "outlet": outlet, "earnings": earnings, "settings": settings, "departments": departments,
-         "order_timelines": order_timelines, "on_hold_count": on_hold_count, "reorder_orders": reorder_orders,
+         "order_timelines": order_timelines, "order_journeys": order_journeys, "on_hold_count": on_hold_count, "reorder_orders": reorder_orders,
          "wallet_ledger": wallet_ledger, "earnings_wallet": earnings_wallet, "locked_commission": locked_commission,
          "earnings_wallet_ledger": earnings_wallet_ledger, "targets": targets,
          "guide": guide, "summary": summary, "summary_period": period,
