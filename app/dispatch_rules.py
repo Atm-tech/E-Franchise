@@ -40,6 +40,7 @@ def make_docket(cur, rows, user):
         raise HTTPException(400, 'Docket bill limit exceeded')
     if len({(r['franchisee_id'], r['outlet_id'], r['fulfillment_mode']) for r in rows}) != 1:
         raise HTTPException(400, 'Select bills from one franchise, outlet and fulfilment mode')
+    claim_packed_bills(cur, rows, user)
     number = a.next_code('DCK-', 'dockets', 'docket_number')
     cur.execute("INSERT INTO dockets(docket_number,franchisee_id,outlet_id,status,expected_weight_kg,created_at) VALUES(?,?,?,'DOCKET_CREATED',?,?)",
                 (number, rows[0]['franchisee_id'], rows[0]['outlet_id'], sum(r['expected_weight_kg'] or 0 for r in rows), a.now_str()))
@@ -50,6 +51,48 @@ def make_docket(cur, rows, user):
         a.add_order_event(cur, row['order_id'], 'DOCKET_CREATED', number, user['id'])
     a.audit(cur, user, 'CREATE', 'DOCKET', did, f'{number}: {len(rows)} bills')
     return did
+
+
+def claim_packed_bills(cur, rows, user):
+    """Lock/recheck each bill so concurrent docket requests cannot reuse it."""
+    for row in sorted(rows, key=lambda row: row['id']):
+        if row['outlet_id'] != user['outlet_id']:
+            raise HTTPException(403, 'Bill belongs to another outlet')
+        cur.execute("""UPDATE bills SET updated_at=updated_at WHERE id=?
+            AND outlet_id=? AND status='PACKED_INDIVIDUALLY'
+            AND NOT EXISTS(SELECT 1 FROM docket_bills WHERE bill_id=bills.id)""",
+                    (row['id'], user['outlet_id']))
+        if cur.rowcount != 1:
+            raise HTTPException(409, 'Bill already grouped or no longer packed. Refresh the queue.')
+
+
+def append_docket(cur, docket_id, rows, user):
+    a = ops.a
+    cur.execute("UPDATE dockets SET status=status WHERE id=? AND outlet_id=? AND status='DOCKET_CREATED'",
+                (docket_id, user['outlet_id']))
+    if cur.rowcount != 1:
+        raise HTTPException(409, 'Only an open docket at your outlet can receive later bills. Create a new docket after guard handover.')
+    docket = cur.execute('SELECT * FROM dockets WHERE id=?', (docket_id,)).fetchone()
+    existing = cur.execute('''SELECT b.*,o.fulfillment_mode FROM docket_bills db
+        JOIN bills b ON b.id=db.bill_id JOIN orders o ON o.id=b.order_id
+        WHERE db.docket_id=?''', (docket_id,)).fetchall()
+    if not rows or not existing:
+        raise HTTPException(400, 'Select packed bills for a nonempty docket')
+    compatible = {(r['franchisee_id'], r['outlet_id'], r['fulfillment_mode']) for r in [*existing, *rows]}
+    if len(compatible) != 1 or rows[0]['franchisee_id'] != docket['franchisee_id']:
+        raise HTTPException(400, 'Docket bills must share one franchise, outlet and fulfilment mode')
+    if len(existing) + len(rows) > int(a.get_setting(cur, 'max_bills_per_docket', '30')):
+        raise HTTPException(400, 'Docket bill limit exceeded')
+    claim_packed_bills(cur, rows, user)
+    for row in rows:
+        cur.execute('INSERT INTO docket_bills(docket_id,bill_id) VALUES(?,?)', (docket_id, row['id']))
+        cur.execute("UPDATE bills SET status='DOCKET_CREATED',updated_at=? WHERE id=?", (a.now_str(), row['id']))
+        a.add_order_event(cur, row['order_id'], 'DOCKET_CREATED', 'Added later to ' + docket['docket_number'], user['id'])
+    weight = sum(float(r['expected_weight_kg'] or 0) for r in [*existing, *rows])
+    cur.execute("""UPDATE dockets SET expected_weight_kg=?,actual_weight_kg=NULL,weight_variance_kg=NULL,
+        weight_check_status='PENDING',seal_status='PENDING',seal_checked_at=NULL,seal_checked_by=NULL,seal_notes=NULL WHERE id=?""", (weight, docket_id))
+    a.audit(cur, user, 'APPEND_BILLS', 'DOCKET', docket_id, f'{len(rows)} later bills added; expected weight {weight}')
+    return docket_id
 
 
 def prepare_handover(cur, bill, user):

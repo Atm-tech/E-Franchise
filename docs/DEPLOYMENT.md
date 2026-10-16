@@ -185,3 +185,22 @@ The backend starts a profit worker automatically. It checks persisted due dates 
 Keep the backend running continuously; a sleeping or stopped host cannot run background checks. `PROFIT_CHECK_INTERVAL_SECONDS` changes the interval (minimum 1 second). `PROFIT_WORKER_ENABLED=0` disables the worker. Test environments disable it automatically. SQLite uses its existing write transaction; PostgreSQL release checks use a transaction advisory lock to serialize checks across processes. No extra database or queue is required.
 
 For local flow testing, run `python scripts/profit_credit_mode.py immediate`. This credits existing eligible completed orders immediately and new completed orders at completion. Restore normal per-order due dates with `python scripts/profit_credit_mode.py delayed`. Both modes retain the worker. Already credited profits remain credited; switching modes never reverses credits. Immediate mode is disabled for production and remote databases.
+
+
+## Outlet franchise workflow demo
+
+Run `python scripts/seed_outlet_franchises.py` to validate the configured target;
+add `--commit` to create the test data. The seed requires the existing `frn`
+outlet mapping and SKU `35004`. It creates `fran1` through `fran5`, each with
+password `12345`, on that same outlet, without resetting existing accounts.
+Each account has five distinct demo customers: two orders awaiting billing,
+one bill awaiting packing, one bill in an open docket, and one packed late bill.
+Synthetic stock receipts are recorded for these orders; no wallets are credited
+or debited. The seed is repeatable and preserves later user actions.
+
+In the POS workspace, select a franchise to filter Billing, Packing and Dockets.
+Select a packed bill in Packing, then choose a new docket or a matching open
+docket from Destination. Existing dockets accept additional bills only while
+`DOCKET_CREATED`, before handover to the guard. Franchise, outlet, fulfilment
+mode, capacity and unassigned packed state are rechecked server-side; expected
+weight is recalculated. After guard handover, use a new docket for late orders.

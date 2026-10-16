@@ -393,3 +393,11 @@ input.delivery-slider:focus-visible{outline:3px solid #087957;outline-offset:-3p
 @media(max-width:760px){.order-workspace-nav{grid-template-columns:repeat(2,minmax(0,1fr))}}
 
 .function-tray .outlet-nav-icon{display:grid;place-items:center;line-height:1}.outlet-nav-icon svg{display:block;flex-shrink:0}
+
+.outlet-franchise-filter{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:14px;border:1px solid #d9e5dc;border-radius:14px;background:white;margin:16px 0}
+.outlet-franchise-filter label{font-size:12px;font-weight:700;color:#245e43}
+.outlet-franchise-filter select,.docket-target-label select{width:auto;margin:0;padding:9px 12px;border:1px solid #ceded1;border-radius:9px;background:#fff;font-size:12px;max-width:100%}
+.outlet-franchise-filter small{font-size:11px;color:#6e8475}
+[data-outlet-franchise][hidden]{display:none!important}
+.docket-target-label{display:grid;gap:5px;font-size:11px;min-width:0}
+@media(max-width:760px){#docket-builder{flex-wrap:wrap}.docket-target-label{width:100%}.docket-target-label select{width:100%}.outlet-franchise-filter small{width:100%}}

@@ -168,6 +168,50 @@ class OperationsTests(unittest.TestCase):
         self.assertIn('Generate pickup code',page.text)
         self.assertEqual(page.text.count('data-dispatch-status='),1)
 
+    def test_five_demo_franchises_and_late_docket_bill_safeguards(self):
+        from scripts.seed_outlet_franchises import seed
+        self.sql("UPDATE products SET sku_code='35004' WHERE id=?", (self.product['id'],))
+        seed(True)
+        seed(True)
+        self.assertEqual(self.row("SELECT COUNT(*) FROM orders WHERE order_number LIKE 'DEMO-FRAN%' ")[0],25)
+        self.assertEqual(self.row("SELECT COUNT(*) FROM users WHERE phone IN ('fran1','fran2','fran3','fran4','fran5')")[0],5)
+        self.login('pos')
+        page=self.client.get('/pos/home')
+        self.assertEqual(page.status_code,200,page.text[:200])
+        self.assertIn('Demo Franchise 5',page.text)
+        self.assertIn('id="docket-target"',page.text)
+        first=self.row("SELECT b.* FROM bills b WHERE bill_number='DEMO-BILL-FRAN1-005'")
+        other=self.row("SELECT b.* FROM bills b WHERE bill_number='DEMO-BILL-FRAN2-005'")
+        docket=self.row("SELECT d.* FROM dockets d WHERE franchisee_id=?",(first['franchisee_id'],))
+        before=self.row('SELECT COUNT(*) FROM docket_bills')[0]
+        result=self.post('/pos/dockets',{'bill_ids':f"{first['id']},{other['id']}"})
+        self.assertIn('error=',result.headers['location'])
+        self.assertEqual(self.row('SELECT COUNT(*) FROM docket_bills')[0],before)
+        result=self.post('/pos/dockets',{'bill_ids':str(other['id']),'docket_id':docket['id']})
+        self.assertEqual(result.status_code,400)
+        self.sql("UPDATE orders SET fulfillment_mode='DELIVERY_MAN' WHERE id=?", (first['order_id'],))
+        self.assertEqual(self.post('/pos/dockets',{'bill_ids':str(first['id']),'docket_id':docket['id']}).status_code,400)
+        self.sql("UPDATE orders SET fulfillment_mode='FRANCHISE_PICKUP' WHERE id=?", (first['order_id'],))
+        self.sql("UPDATE settings SET value='1' WHERE key='max_bills_per_docket'")
+        self.assertEqual(self.post('/pos/dockets',{'bill_ids':str(first['id']),'docket_id':docket['id']}).status_code,400)
+        self.sql("UPDATE settings SET value='30' WHERE key='max_bills_per_docket'")
+        self.sql("UPDATE dockets SET status='HANDED_TO_GUARD' WHERE id=?",(docket['id'],))
+        self.assertEqual(self.post('/pos/dockets',{'bill_ids':str(first['id']),'docket_id':docket['id']}).status_code,409)
+        self.sql("UPDATE dockets SET status='DOCKET_CREATED' WHERE id=?",(docket['id'],))
+        self.assertEqual(self.post('/pos/dockets',{'bill_ids':str(first['id']),'docket_id':docket['id']}).status_code,303)
+        self.assertEqual(self.row('SELECT COUNT(*) FROM docket_bills WHERE docket_id=?',(docket['id'],))[0],2)
+        weight=self.row('SELECT expected_weight_kg FROM dockets WHERE id=?',(docket['id'],))[0]
+        self.assertAlmostEqual(weight,float(first['expected_weight_kg'])+float(docket['expected_weight_kg']))
+        self.post('/pos/dockets',{'bill_ids':str(first['id']),'docket_id':docket['id']})
+        self.assertEqual(self.row('SELECT COUNT(*) FROM docket_bills WHERE bill_id=?',(first['id'],))[0],1)
+        account=self.row("SELECT * FROM users WHERE phone='fran1'")
+        from app.security import verify_password
+        self.assertTrue(verify_password('12345',account['pin']))
+        self.post('/login',{'phone':'fran1','pin':'12345'})
+        page=self.client.get('/franchise/home')
+        self.assertIn('DEMO-FRAN1-001',page.text)
+        self.assertNotIn('DEMO-FRAN2-001',page.text)
+
     def test_role_pages_security_and_restart(self):
         self.assertEqual(self.client.post('/login',data={'phone':'adm','pin':'adm@123'}).status_code,403)
         for role,path in [('adm','/admin/dashboard'),('frn','/franchise/home'),('pos','/pos/home'),('grd','/guard/home'),('dlv','/delivery/home')]:

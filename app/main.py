@@ -3241,24 +3241,25 @@ def pos_home(request: Request):
         ).fetchall()
         open_bills = conn.execute(
             """
-            SELECT b.*, f.name as franchisee_name
-            FROM bills b JOIN franchisees f ON f.id=b.franchisee_id
-            WHERE b.outlet_id=? AND b.status IN ('BILLED', 'PACKED_INDIVIDUALLY', 'DOCKET_CREATED', 'HANDED_TO_GUARD', 'AT_GUARD_DESK', 'WEIGHT_CHECK_ALERT', 'WEIGHT_CHECK_PASSED', 'DELIVERY_ASSIGNED')
+            SELECT b.*, f.name as franchisee_name, o.fulfillment_mode
+            FROM bills b JOIN franchisees f ON f.id=b.franchisee_id JOIN orders o ON o.id=b.order_id
+            WHERE b.outlet_id=? AND NOT EXISTS(SELECT 1 FROM docket_bills db WHERE db.bill_id=b.id) AND b.status IN ('BILLED', 'PACKED_INDIVIDUALLY', 'DOCKET_CREATED', 'HANDED_TO_GUARD', 'AT_GUARD_DESK', 'WEIGHT_CHECK_ALERT', 'WEIGHT_CHECK_PASSED', 'DELIVERY_ASSIGNED')
             ORDER BY b.created_at ASC, b.id ASC
             """, (user["outlet_id"] or 1,)
         ).fetchall()
         dockets = conn.execute(
             """
-            SELECT d.*, f.shop_name, COUNT(db.bill_id) bill_count,
+            SELECT d.*, f.shop_name, MIN(o.fulfillment_mode) fulfillment_mode, COUNT(db.bill_id) bill_count,
                    group_concat(b.bill_number, ', ') bill_numbers
             FROM dockets d JOIN franchisees f ON f.id=d.franchisee_id
-            LEFT JOIN docket_bills db ON db.docket_id=d.id LEFT JOIN bills b ON b.id=db.bill_id
+            LEFT JOIN docket_bills db ON db.docket_id=d.id LEFT JOIN bills b ON b.id=db.bill_id LEFT JOIN orders o ON o.id=b.order_id
             WHERE d.outlet_id=? GROUP BY d.id, f.shop_name ORDER BY d.created_at ASC, d.id ASC LIMIT 30
             """, (user["outlet_id"] or 1,)
         ).fetchall()
         outlet = conn.execute("SELECT * FROM outlets WHERE id=?", (user["outlet_id"] or 1,)).fetchone()
+        outlet_franchises = conn.execute("SELECT id,shop_name FROM franchisees WHERE outlet_id=? ORDER BY shop_name", (user["outlet_id"] or 1,)).fetchall()
         picking_required = get_setting(conn.cursor(), "require_picking", "1") == "1"
-    return templates.TemplateResponse("pos_home.html", {"request": request, "user": user, "orders": orders, "order_items": order_items, "open_bills": open_bills, "dockets": dockets, "outlet": outlet, "picking_required": picking_required, "error": request.query_params.get("error", ""), "message": request.query_params.get("message", "")})
+    return templates.TemplateResponse("pos_home.html", {"request": request, "user": user, "orders": orders, "order_items": order_items, "outlet_franchises": outlet_franchises, "open_bills": open_bills, "dockets": dockets, "outlet": outlet, "picking_required": picking_required, "error": request.query_params.get("error", ""), "message": request.query_params.get("message", "")})
 
 
 @app.post("/pos/bills")
@@ -3292,7 +3293,7 @@ def create_bill(request: Request, order_id: int = Form(...)) -> RedirectResponse
 
 
 @app.post("/pos/dockets")
-def create_docket(request: Request, bill_ids: str = Form(...)) -> RedirectResponse:
+def create_docket(request: Request, bill_ids: str = Form(...), docket_id: int | None = Form(None)) -> RedirectResponse:
     user = require_role(request, "POS")
     if isinstance(user, RedirectResponse):
         return user
@@ -3316,7 +3317,10 @@ def create_docket(request: Request, bill_ids: str = Form(...)) -> RedirectRespon
         fulfillment_modes = {r["fulfillment_mode"] for r in rows}
         if len(franchise_ids) != 1 or len(fulfillment_modes) != 1:
             return RedirectResponse("/pos/home?error=Docket+bills+must+share+one+franchise+and+fulfilment+mode#packing", status_code=303)
-        dispatch_rules.make_docket(cur, rows, user)
+        if docket_id:
+            dispatch_rules.append_docket(cur, docket_id, rows, user)
+        else:
+            dispatch_rules.make_docket(cur, rows, user)
         conn.commit()
     return RedirectResponse("/pos/home?message=Docket+created#dockets", status_code=303)
 
