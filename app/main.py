@@ -258,9 +258,12 @@ def target_sales_amount(
     franchisee_id: int,
     period_start: str,
     period_end: str,
+    *, include_confirmed: bool = False,
 ) -> float:
-    sales_time = "COALESCE(NULLIF(o.updated_at,''), o.created_at)"
-    filters = f"o.franchisee_id=? AND {sales_time}>=? AND {sales_time}<? AND o.status='DELIVERED'"
+    sales_time = "COALESCE(NULLIF(o.executed_at,''), o.created_at)" if include_confirmed else "COALESCE(NULLIF(o.delivered_at,''), NULLIF(o.updated_at,''), o.created_at)"
+    status_filter = "o.status NOT IN ('ON_HOLD','CANCELLED')" if include_confirmed else "o.status='DELIVERED'"
+    filters = f"o.franchisee_id=? AND {sales_time}>=? AND {sales_time}<? AND {status_filter}"
+    net_line = "CASE WHEN oi.qty>COALESCE(ret.returned_qty,0) THEN oi.line_total*(oi.qty-COALESCE(ret.returned_qty,0))*1.0/oi.qty ELSE 0 END"
     params: list[Any] = [franchisee_id, period_start, period_end]
     if program["starts_on"]:
         filters += f" AND substr({sales_time},1,10)>=?"
@@ -270,21 +273,24 @@ def target_sales_amount(
         params.append(program["ends_on"])
     if program["scope"] == "TOTAL_SALE":
         row = cur.execute(
-            f"""SELECT COALESCE(SUM(oi.line_total),0) total
+            f"""SELECT COALESCE(SUM({net_line}),0) total
                 FROM order_items oi JOIN orders o ON o.id=oi.order_id JOIN products p ON p.id=oi.product_id
+                LEFT JOIN (SELECT order_item_id,SUM(quantity) returned_qty FROM order_returns GROUP BY order_item_id) ret ON ret.order_item_id=oi.id
                 WHERE {filters} AND oi.slab_eligible=1""", params,
         ).fetchone()
     elif program["scope"] == "DEPARTMENT":
         row = cur.execute(
-            f"""SELECT COALESCE(SUM(oi.line_total),0) total
+            f"""SELECT COALESCE(SUM({net_line}),0) total
                 FROM order_items oi JOIN orders o ON o.id=oi.order_id JOIN products p ON p.id=oi.product_id
+                LEFT JOIN (SELECT order_item_id,SUM(quantity) returned_qty FROM order_returns GROUP BY order_item_id) ret ON ret.order_item_id=oi.id
                 WHERE {filters} AND oi.slab_eligible=1 AND lower(p.department)=lower(?)""",
             params + [program["department"] or ""],
         ).fetchone()
     else:
         row = cur.execute(
-            f"""SELECT COALESCE(SUM(oi.line_total),0) total
+            f"""SELECT COALESCE(SUM({net_line}),0) total
                 FROM order_items oi JOIN orders o ON o.id=oi.order_id JOIN products p ON p.id=oi.product_id
+                LEFT JOIN (SELECT order_item_id,SUM(quantity) returned_qty FROM order_returns GROUP BY order_item_id) ret ON ret.order_item_id=oi.id
                 WHERE {filters} AND oi.slab_eligible=1 AND oi.product_id=?""",
             params + [program["product_id"]],
         ).fetchone()
@@ -361,7 +367,7 @@ def target_dashboard(cur: sqlite3.Cursor, franchisee_id: int) -> list[dict[str, 
         slabs = [dict(slab) for slab in cur.execute(
             "SELECT * FROM target_slabs WHERE program_id=? AND status='ACTIVE' ORDER BY threshold_amount", (row["id"],)
         ).fetchall()]
-        sales = float(row["sales_amount"] or 0)
+        sales = target_sales_amount(cur, row, franchisee_id, *monthly_period()[:2], include_confirmed=True)
         earned = float(row["earned_reward"] or 0)
         achieved = next((slab for slab in reversed(slabs) if sales >= float(slab['threshold_amount'])), None)
         for slab in slabs:
@@ -2466,6 +2472,7 @@ def record_order_return(
             "INSERT INTO order_returns(order_id,order_item_id,quantity,commission_reversed,reason,created_by,created_at) VALUES(?,?,?,?,?,?,?)",
             (order_id, order_item_id, quantity, commission_reversed, reason.strip(), user["id"], now_str()),
         )
+        refresh_target_progress(cur, order["franchisee_id"], user["id"])
         add_order_event(cur, order_id, "RETURN_RECORDED", f"Returned {quantity} unit(s); pending commission adjusted", user["id"])
         audit(cur, user, "RECORD_RETURN", "ORDER_ITEM", order_item_id,
               f"Order {order_id}; qty {quantity}; held commission reduced {commission_reversed:.2f}; {reason.strip()}")

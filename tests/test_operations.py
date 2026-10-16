@@ -222,7 +222,7 @@ class OperationsTests(unittest.TestCase):
         self.assertEqual(target['next_slab']['reward_at_milestone'],1000)
         start,end,_=m.monthly_period()
         self.sql("INSERT INTO franchise_target_progress(franchisee_id,program_id,period_start,period_end,sales_amount,earned_reward,credited_reward,status,updated_at) VALUES(?,?,?,?,50000,1000,1000,'ACTIVE',?) ON CONFLICT(franchisee_id,program_id,period_start) DO UPDATE SET sales_amount=50000,earned_reward=1000,credited_reward=1000",(self.fid,program,start,end,m.now_str()))
-        with m.get_conn() as conn:
+        with patch.object(m,'target_sales_amount',return_value=50000), m.get_conn() as conn:
             target=next(t for t in m.target_dashboard(conn.cursor(),self.fid) if t['id']==program)
         self.assertEqual(target['current_reward_rate'],2)
         self.assertEqual(target['next_slab']['reward_at_milestone'],4000)
@@ -233,6 +233,25 @@ class OperationsTests(unittest.TestCase):
         self.assertEqual(page.status_code,200)
         self.assertIn('1,000.00 total reward',page.text)
         self.assertIn('1,000.00 more than your current',page.text)
+
+    def test_confirmed_target_sales_subtract_returns_and_exclude_cancelled(self):
+        outlet=self.row('SELECT outlet_id FROM franchisees WHERE id=?',(self.fid,))[0]
+        self.sql("UPDATE products SET slab_eligible=1 WHERE id=?",(self.product['id'],))
+        self.sql("INSERT INTO inventory_balances(outlet_id,product_id,on_hand,reserved,updated_at) VALUES(?,?,20,0,?) ON CONFLICT(outlet_id,product_id) DO UPDATE SET on_hand=20,reserved=0",(outlet,self.product['id'],m.now_str()))
+        order=self.order()
+        self.sql('UPDATE order_items SET slab_eligible=1 WHERE order_id=?',(order['id'],))
+        start,end,_=m.monthly_period()
+        program=dict(self.row("SELECT * FROM target_programs WHERE scope='TOTAL_SALE' LIMIT 1"))
+        program['starts_on']=None;program['ends_on']=None
+        def sales(confirmed):
+            with m.get_conn() as conn:return m.target_sales_amount(conn.cursor(),program,self.fid,start,end,include_confirmed=confirmed)
+        self.assertEqual(sales(True),order['item_subtotal'])
+        self.assertEqual(sales(False),0)
+        item=self.row('SELECT * FROM order_items WHERE order_id=?',(order['id'],))
+        self.sql("INSERT INTO order_returns(order_id,order_item_id,quantity,commission_reversed,reason,created_at) VALUES(?,?,1,0,'Test return',?)",(order['id'],item['id'],m.now_str()))
+        self.assertEqual(sales(True),0)
+        self.sql("UPDATE orders SET status='CANCELLED' WHERE id=?",(order['id'],))
+        self.assertEqual(sales(True),0)
 
     def test_role_pages_security_and_restart(self):
         self.assertEqual(self.client.post('/login',data={'phone':'adm','pin':'adm@123'}).status_code,403)
