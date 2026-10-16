@@ -412,3 +412,7 @@ input.delivery-slider:focus-visible{outline:3px solid #087957;outline-offset:-3p
 .helper-bill input{width:18px;height:18px;margin:0;flex-shrink:0;accent-color:#176344}.helper-bill>span{display:grid;gap:4px;min-width:0;overflow-wrap:anywhere}.helper-bill small{font-size:10px;color:#859087}.helper-bill>strong{margin-left:auto;white-space:nowrap}
 .helper-footer{display:grid;gap:10px;margin-top:14px}.helper-footer>small{font-size:12px;color:#4c6a57}.helper-footer>button{padding:12px;border:0;border-radius:10px;background:#155d43;color:white;font-weight:700;cursor:pointer}.helper-footer>button:disabled{opacity:.45;cursor:default}
 @media(max-width:560px){.helper-fields{grid-template-columns:1fr}.docket-helper{padding:14px}}
+
+.invoice-franchise-contact{display:flex;justify-content:space-between;gap:16px;padding:12px 14px;margin:0 0 16px;border:1px solid #cddfd2;border-radius:10px;background:#f0f6f1;break-inside:avoid}
+.invoice-franchise-contact>div{display:grid;gap:4px;min-width:0}.invoice-franchise-contact small{font-size:8px;letter-spacing:1px;color:#5b7965}.invoice-franchise-contact b{font-size:13px}.invoice-franchise-contact span{font-size:10px;overflow-wrap:anywhere}.invoice-franchise-contact a{font-weight:700;font-size:12px;color:#155d43;text-decoration:none}
+@media(max-width:560px){.invoice-franchise-contact{flex-direction:column;gap:10px}}

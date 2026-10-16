@@ -2736,7 +2736,7 @@ def customer_bill(request: Request, bill_id: int):
             """SELECT b.*, o.order_number, o.customer_name, o.customer_phone, o.buyer_address, o.item_subtotal,
                       o.delivery_charge, o.total, o.fulfillment_mode, o.supply_state_code, o.supplier_state_code, o.created_at order_created_at,
                       o.return_window_days, o.delivered_at, o.commission_available_at,
-                      f.shop_name, f.name franchise_name, f.address franchise_address, f.gst_number franchise_gstin,
+                      f.shop_name, f.name franchise_name, f.mobile franchise_phone, f.address franchise_address, f.gst_number franchise_gstin,
                       ot.name outlet_name, ot.code outlet_code, ot.address outlet_address
                FROM bills b JOIN orders o ON o.id=b.order_id JOIN franchisees f ON f.id=b.franchisee_id
                JOIN outlets ot ON ot.id=b.outlet_id

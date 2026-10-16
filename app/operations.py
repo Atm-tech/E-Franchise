@@ -407,7 +407,7 @@ def dispatch_label(request: Request, kind: str, entity_id: int):
         if user['role']!='ADMIN' and row['outlet_id']!=user['outlet_id']:
             raise HTTPException(403,'Wrong outlet')
         ids=a.order_ids_for_entity(conn.cursor(),kind,entity_id)
-        bills=conn.execute(f"SELECT b.bill_number,o.order_number,f.shop_name,COALESCE(NULLIF(f.delivery_address,''),f.address) address FROM bills b JOIN orders o ON o.id=b.order_id JOIN franchisees f ON f.id=o.franchisee_id WHERE o.id IN ({','.join('?' for _ in ids)})",ids).fetchall()
+        bills=conn.execute(f"SELECT b.bill_number,o.order_number,f.shop_name,f.name franchise_name,f.mobile franchise_phone,COALESCE(NULLIF(f.delivery_address,''),f.address) address FROM bills b JOIN orders o ON o.id=b.order_id JOIN franchisees f ON f.id=o.franchisee_id WHERE o.id IN ({','.join('?' for _ in ids)})",ids).fetchall()
     from reportlab.graphics.barcode import code128
     from reportlab.pdfgen import canvas
     buffer=io.BytesIO()
@@ -418,7 +418,7 @@ def dispatch_label(request: Request, kind: str, entity_id: int):
     code128.Code128(number,barHeight=45,barWidth=0.7).drawOn(pdf,15,465)
     y=435
     for bill in bills:
-        for text in (bill['bill_number']+' / '+bill['order_number'], bill['shop_name'], bill['address'] or ''):
+        for text in (bill['bill_number']+' / '+bill['order_number'], bill['shop_name'], bill['franchise_name']+' | Contact: '+(bill['franchise_phone'] or 'Not provided'), bill['address'] or ''):
             if y<50: pdf.showPage();pdf.setFont('Helvetica',12);y=550
             pdf.drawString(24,y,str(text)[:60]);y-=18
         y-=12
