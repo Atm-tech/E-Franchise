@@ -29,9 +29,16 @@
     const orders = all('#filtered-orders .order-row-detailed');
     if (orders.length || document.getElementById('filtered-orders')) {
       badge(document.querySelector('[data-nav-view="orders-view"]'), orders.filter(card => ['DELIVERED','PICKED_BY_FRANCHISEE'].includes(card.dataset.orderStatus)).length);
-      const unbilled = orders.filter(card => !card.dataset.billNumber && !['CUSTOMER_DELIVERED','DELIVERED','PICKED_BY_FRANCHISEE','CANCELLED'].includes(card.dataset.orderStatus)).length;
-      const dispatches = all('#dispatch-source [data-dispatch-status]').filter(card => !['DELIVERED','PICKED_BY_FRANCHISEE'].includes(card.dataset.dispatchStatus) && card.dataset.dispatchTask !== 'DELIVERED').length;
-      badge(document.querySelector('[data-nav-view="outlet-processing-view"]'), unbilled + dispatches);
+      const readyDockets = all('#dispatch-source [data-dispatch-kind="DOCKET"]').filter(card => card.dataset.dispatchStatus === 'WEIGHT_CHECK_PASSED' && card.dataset.dispatchMode === 'FRANCHISE_PICKUP').length;
+      const pendingBills = orders.filter(card => ['DELIVERED','PICKED_BY_FRANCHISEE'].includes(card.dataset.orderStatus) && card.dataset.billNumber).length;
+      badge(document.querySelector('[data-nav-view="outlet-processing-view"]'), readyDockets);
+      [['dockets',readyDockets],['bills',pendingBills]].forEach(([key,count]) => {
+        const button = document.querySelector('[data-pending-summary="'+key+'"]');
+        if (!button) return;
+        const number = button.querySelector('b');
+        if (number.textContent !== String(count)) number.textContent = String(count);
+        if (button.hidden !== !count) button.hidden = !count;
+      });
     }
     all('[data-pending-count]').forEach(button => badge(button, Number(button.dataset.pendingCount) || 0));
     all('[data-admin-tab]').forEach(button => {
