@@ -32,6 +32,10 @@
       const unbilled = orders.filter(card => !card.dataset.billNumber && !['CUSTOMER_DELIVERED','DELIVERED','PICKED_BY_FRANCHISEE','CANCELLED'].includes(card.dataset.orderStatus)).length;
       const dispatches = all('#dispatch-source [data-dispatch-status]').filter(card => !['DELIVERED','PICKED_BY_FRANCHISEE'].includes(card.dataset.dispatchStatus) && card.dataset.dispatchTask !== 'DELIVERED').length;
       badge(document.querySelector('[data-nav-view="outlet-processing-view"]'), unbilled + dispatches);
+      const readyDockets = all('#dispatch-source [data-dispatch-kind="DOCKET"]').filter(card => card.dataset.dispatchStatus === 'WEIGHT_CHECK_PASSED').length;
+      const pendingBills = orders.filter(card => card.dataset.billNumber && !['DELIVERED','PICKED_BY_FRANCHISEE','CUSTOMER_DELIVERED','CANCELLED'].includes(card.dataset.orderStatus)).length;
+      [['[data-franchise-ready-dockets]',readyDockets],['[data-franchise-pending-bills]',pendingBills]].forEach(([selector,count]) => all(selector).forEach(node => {if (node.textContent !== String(count)) node.textContent = String(count);}));
+
     }
     all('[data-pending-count]').forEach(button => badge(button, Number(button.dataset.pendingCount) || 0));
     all('[data-admin-tab]').forEach(button => {
