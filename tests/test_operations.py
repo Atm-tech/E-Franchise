@@ -212,6 +212,28 @@ class OperationsTests(unittest.TestCase):
         self.assertIn('DEMO-FRAN1-001',page.text)
         self.assertNotIn('DEMO-FRAN2-001',page.text)
 
+    def test_next_milestone_shows_cash_reward_and_additional_credit(self):
+        program=self.row("SELECT id FROM target_programs WHERE status='ACTIVE' ORDER BY id LIMIT 1")[0]
+        self.sql('DELETE FROM target_slabs WHERE program_id=?',(program,))
+        for amount,rate in [(50000,2),(100000,4),(500000,10)]:
+            self.sql("INSERT INTO target_slabs(program_id,threshold_amount,reward_percent,status) VALUES(?,?,?,'ACTIVE')",(program,amount,rate))
+        with m.get_conn() as conn:
+            target=next(t for t in m.target_dashboard(conn.cursor(),self.fid) if t['id']==program)
+        self.assertEqual(target['next_slab']['reward_at_milestone'],1000)
+        start,end,_=m.monthly_period()
+        self.sql("INSERT INTO franchise_target_progress(franchisee_id,program_id,period_start,period_end,sales_amount,earned_reward,credited_reward,status,updated_at) VALUES(?,?,?,?,50000,1000,1000,'ACTIVE',?) ON CONFLICT(franchisee_id,program_id,period_start) DO UPDATE SET sales_amount=50000,earned_reward=1000,credited_reward=1000",(self.fid,program,start,end,m.now_str()))
+        with m.get_conn() as conn:
+            target=next(t for t in m.target_dashboard(conn.cursor(),self.fid) if t['id']==program)
+        self.assertEqual(target['current_reward_rate'],2)
+        self.assertEqual(target['next_slab']['reward_at_milestone'],4000)
+        self.assertEqual(target['next_slab']['additional_reward'],3000)
+        self.assertEqual(target['next_slab']['remaining_sales'],50000)
+        self.login('frn')
+        page=self.client.get('/franchise/home')
+        self.assertEqual(page.status_code,200)
+        self.assertIn('4,000.00 total reward',page.text)
+        self.assertIn('3,000.00 more than your current',page.text)
+
     def test_role_pages_security_and_restart(self):
         self.assertEqual(self.client.post('/login',data={'phone':'adm','pin':'adm@123'}).status_code,403)
         for role,path in [('adm','/admin/dashboard'),('frn','/franchise/home'),('pos','/pos/home'),('grd','/guard/home'),('dlv','/delivery/home')]:

@@ -362,10 +362,18 @@ def target_dashboard(cur: sqlite3.Cursor, franchisee_id: int) -> list[dict[str, 
             "SELECT * FROM target_slabs WHERE program_id=? AND status='ACTIVE' ORDER BY threshold_amount", (row["id"],)
         ).fetchall()]
         sales = float(row["sales_amount"] or 0)
+        earned = float(row["earned_reward"] or 0)
+        achieved = next((slab for slab in reversed(slabs) if sales >= float(slab['threshold_amount'])), None)
+        for slab in slabs:
+            slab['reward_at_milestone'] = round(float(slab['threshold_amount']) * float(slab['reward_percent']) / 100, 2)
+            slab['remaining_sales'] = round(max(0, float(slab['threshold_amount']) - sales), 2)
+            slab['additional_reward'] = round(max(0, slab['reward_at_milestone'] - earned), 2)
+        current_reward_rate = float(achieved['reward_percent']) if achieved else 0
         next_slab = next((slab for slab in slabs if sales < float(slab["threshold_amount"])), None)
         progress_target = float(next_slab["threshold_amount"]) if next_slab else (float(slabs[-1]["threshold_amount"]) if slabs else 1)
         result.append(dict(row) | {
             "sales_amount": sales,
+            "current_reward_rate": current_reward_rate,
             "earned_reward": float(row["earned_reward"] or 0),
             "credited_reward": float(row["credited_reward"] or 0),
             "slabs": slabs,
