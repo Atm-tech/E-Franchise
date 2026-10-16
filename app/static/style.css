@@ -416,3 +416,13 @@ input.delivery-slider:focus-visible{outline:3px solid #087957;outline-offset:-3p
 .invoice-franchise-contact{display:flex;justify-content:space-between;gap:16px;padding:12px 14px;margin:0 0 16px;border:1px solid #cddfd2;border-radius:10px;background:#f0f6f1;break-inside:avoid}
 .invoice-franchise-contact>div{display:grid;gap:4px;min-width:0}.invoice-franchise-contact small{font-size:8px;letter-spacing:1px;color:#5b7965}.invoice-franchise-contact b{font-size:13px}.invoice-franchise-contact span{font-size:10px;overflow-wrap:anywhere}.invoice-franchise-contact a{font-weight:700;font-size:12px;color:#155d43;text-decoration:none}
 @media(max-width:560px){.invoice-franchise-contact{flex-direction:column;gap:10px}}
+
+#filtered-orders .swipe-delivery>span{padding:0;text-align:center}
+#filtered-orders input.delivery-slider{height:40px;top:0;padding:2px;display:block;line-height:1}
+#filtered-orders input.delivery-slider::-webkit-slider-runnable-track{height:36px;border:0;margin:0}
+#filtered-orders input.delivery-slider::-webkit-slider-thumb{width:36px;height:36px;margin:0;background-position:50% 50%;background-size:20px 20px}
+#filtered-orders input.delivery-slider::-moz-range-track{height:36px;border:0}
+#filtered-orders input.delivery-slider::-moz-range-thumb{width:36px;height:36px;background-position:50% 50%;background-size:20px 20px}
+.next-reward-card{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;padding:18px;margin:0 0 16px;border:1px solid #bcd6bd;border-radius:18px;background:linear-gradient(110deg,#eaf4df,#f6faf1)}
+.next-reward-card h2{font-size:22px;margin:0 0 7px;color:#155d43}.next-reward-card p:not(.eyebrow){font-size:13px;line-height:1.5;margin:0 0 6px;color:#42654b}.next-reward-card small{font-size:10px;color:#6c806a;line-height:1.5}.next-reward-card>button{align-self:center;width:36px;height:36px;border:1px solid #c6dac4;border-radius:50%;background:white;color:#155d43;font-size:22px;cursor:pointer}.next-reward-card>.target-progress,.next-reward-card>small{grid-column:1/-1}.next-reward-card .target-progress{margin:0}
+@media(max-width:560px){.next-reward-card{padding:14px}.next-reward-card h2{font-size:19px}}

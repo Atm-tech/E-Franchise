@@ -133,7 +133,7 @@ class OperationsTests(unittest.TestCase):
         self.sql("UPDATE orders SET status='DELIVERED' WHERE id=?", (order['id'],))
         page = self.client.get('/franchise/home')
         self.assertEqual(page.status_code, 200)
-        self.assertIn('Swipe to deliver &rarr;', page.text)
+        self.assertIn('Swipe to deliver', page.text)
         self.assertIn('Customer address: Address not provided', page.text)
         self.assertIn('Customer handover pending', page.text)
         self.assertEqual(self.post(path).status_code, 303)
