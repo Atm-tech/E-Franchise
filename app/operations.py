@@ -553,6 +553,17 @@ def staff_status(request: Request, user_id: int, status: str = Form(...)):
     return redirect('Staff access updated; previous sessions invalidated')
 
 
+def staff_password_reset(request: Request, user_id: int, new_password: str = Form(..., min_length=12, max_length=128)):
+    user=require_user(request,{'ADMIN'})
+    with a.get_conn() as conn:
+        target=conn.execute("SELECT id,role FROM users WHERE id=?",(user_id,)).fetchone()
+        if not target or target['role'] not in {'POS','GUARD','DELIVERY'}:
+            raise HTTPException(404,'Resettable staff account not found')
+        conn.execute('UPDATE users SET pin=?,auth_version=auth_version+1 WHERE id=?',(hash_password(new_password),user_id))
+        a.audit(conn.cursor(),user,'PASSWORD_RESET','USER',user_id,target['role'])
+    return redirect('Staff password reset; previous sessions invalidated')
+
+
 def settlement_create(request: Request, outlet_id: int = Form(...)):
     user=require_user(request,{'ADMIN'})
     with a.get_conn() as conn:
@@ -918,7 +929,7 @@ ROUTES = [
     ('/pos/orders/{order_id}/claim','POST',claim_order),('/pos/orders/{order_id}/scan','POST',scan_item),
     ('/dispatch/{kind}/{entity_id}/label.pdf','GET',dispatch_label),('/franchise/dispatch-code','POST',issue_code),
     ('/admin/targets','POST',target_program),('/admin/targets/{program_id}/status','POST',target_status),
-    ('/admin/operations/settings','POST',operational_settings),('/admin/coordinates','POST',coordinates),('/admin/users/{user_id}/status','POST',staff_status),
+    ('/admin/operations/settings','POST',operational_settings),('/admin/coordinates','POST',coordinates),('/admin/users/{user_id}/status','POST',staff_status),('/admin/users/{user_id}/password','POST',staff_password_reset),
     ('/admin/franchisees/{franchisee_id}/route','POST',update_route),
     ('/admin/settlements','POST',settlement_create),('/admin/settlements/{settlement_id}/paid','POST',settlement_paid),('/admin/settlements/{settlement_id}.csv','GET',settlement_csv),
     ('/franchise/banks','POST',bank_add),('/admin/banks/{bank_id}/verify','POST',bank_verify),
