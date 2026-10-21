@@ -19,4 +19,14 @@
 <section class="card ops-panel"><p>No POS, Guard or Delivery accounts found.</p><a href="/admin/dashboard#network">Create a staff account</a></section>
 {% endfor %}
 </div>
+<details class="card ops-panel" style="margin-top:28px;border:1px solid #d99582">
+  <summary>Start fresh: clear test workspace</summary>
+  <p>This removes all existing orders, franchises, outlets, staff accounts other than <b>admin</b>, and related test records. The product catalogue and global configuration stay in place.</p>
+  <form method="post" action="/admin/reset-test-workspace" class="ops-form" onsubmit="return confirm('This permanently clears test orders, franchises, outlets, and staff. Continue?')">
+    <input type="hidden" name="request_key" value="{{ new_request_key() }}">
+    <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
+    <label>Type RESET ALL TEST DATA to confirm<input name="confirmation" autocomplete="off" required></label>
+    <button class="danger-button">Clear test workspace</button>
+  </form>
+</details>
 {% endblock %}

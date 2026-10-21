@@ -560,6 +560,37 @@ def staff_access_page(request: Request):
     return a.templates.TemplateResponse('staff_access.html', {'request':request,'user':user,'staff':staff,'message':request.query_params.get('message','')})
 
 
+def reset_test_workspace(request: Request, confirmation: str = Form(...)):
+    user=require_user(request,{'ADMIN'})
+    if os.getenv('APP_ENV','').lower() != 'development':
+        raise HTTPException(403,'Workspace reset is available only in development mode')
+    if confirmation.strip() != 'RESET ALL TEST DATA':
+        raise HTTPException(400,'Type RESET ALL TEST DATA exactly to continue')
+    with a.get_conn() as conn:
+        cur=conn.cursor()
+        keeper=cur.execute("SELECT id FROM users WHERE role='ADMIN' AND phone='admin' AND status='ACTIVE'").fetchone()
+        if not keeper or keeper['id'] != user['id']:
+            raise HTTPException(403,'Sign in with the active admin account named admin to reset the test workspace')
+        counts={table:cur.execute(f'SELECT COUNT(*) AS count FROM {table}').fetchone()['count'] for table in ('orders','franchisees','outlets','users')}
+        for table in (
+            'proofs','device_readings','delivery_tasks','handover_logs','order_returns','order_events',
+            'picked_items','pick_sessions','docket_bills','settlement_orders','settlements',
+            'bills','dockets','order_items','payment_webhook_events','payment_transactions','orders',
+            'franchise_customer_profiles','franchise_target_progress','earnings_wallet_ledger','earnings_wallets',
+            'franchise_advances','franchise_bank_accounts','wallet_transfers','wallet_ledger','franchisees',
+            'inventory_movements','inventory_balances','promotions','otp_challenges','revoked_access_tokens',
+            'login_attempts','mutation_keys','users','outlets','audit_logs',
+        ):
+            if table == 'users':
+                cur.execute('DELETE FROM users WHERE id<>?',(keeper['id'],))
+            else:
+                cur.execute(f'DELETE FROM {table}')
+        a.audit(cur,user,'RESET_TEST_DATA','WORKSPACE',None,
+                f"Removed {counts['orders']} orders, {counts['franchisees']} franchises, {counts['outlets']} outlets, and all other accounts/data; kept Admin and catalogue.")
+        a.upsert_setting(cur,'testing_quick_login_until','0')
+    return redirect('Fresh start complete. Admin and catalogue are ready for setup.', '/admin/staff')
+
+
 def staff_password_reset(request: Request, user_id: int, new_password: str = Form(..., min_length=12, max_length=128)):
     user=require_user(request,{'ADMIN'})
     with a.get_conn() as conn:
@@ -932,7 +963,7 @@ def event_feed(request: Request, after: int = 0):
 
 ROUTES = [
     ('/admin/inventory/receive','POST',receive_inventory),
-    ('/workspace','GET',workspace),('/account','GET',account),('/account/password','POST',password_change),('/admin/staff','GET',staff_access_page),
+    ('/workspace','GET',workspace),('/account','GET',account),('/account/password','POST',password_change),('/admin/staff','GET',staff_access_page),('/admin/reset-test-workspace','POST',reset_test_workspace),
     ('/pos/orders/{order_id}/claim','POST',claim_order),('/pos/orders/{order_id}/scan','POST',scan_item),
     ('/dispatch/{kind}/{entity_id}/label.pdf','GET',dispatch_label),('/franchise/dispatch-code','POST',issue_code),
     ('/admin/targets','POST',target_program),('/admin/targets/{program_id}/status','POST',target_status),
