@@ -576,9 +576,9 @@ def reset_test_workspace(request: Request, confirmation: str = Form(...)):
             'proofs','device_readings','delivery_tasks','handover_logs','order_returns','order_events',
             'picked_items','pick_sessions','docket_bills','settlement_orders','settlements',
             'bills','dockets','order_items','payment_webhook_events','payment_transactions','orders',
-            'franchise_customer_profiles','franchise_target_progress','earnings_wallet_ledger','earnings_wallets',
-            'franchise_advances','franchise_bank_accounts','wallet_transfers','wallet_ledger','franchisees',
-            'inventory_movements','inventory_balances','promotions','otp_challenges','revoked_access_tokens',
+            'franchise_customer_profiles','franchise_target_progress','earnings_wallets',
+            'franchise_advances','franchise_bank_accounts','wallet_transfers','franchisees',
+            'inventory_balances','promotions','otp_challenges','revoked_access_tokens',
             'login_attempts','mutation_keys','users','outlets','audit_logs',
         ):
             if table == 'users':
@@ -586,7 +586,7 @@ def reset_test_workspace(request: Request, confirmation: str = Form(...)):
             else:
                 cur.execute(f'DELETE FROM {table}')
         a.audit(cur,user,'RESET_TEST_DATA','WORKSPACE',None,
-                f"Removed {counts['orders']} orders, {counts['franchisees']} franchises, {counts['outlets']} outlets, and all other accounts/data; kept Admin and catalogue.")
+                f"Removed {counts['orders']} orders, {counts['franchisees']} franchises, {counts['outlets']} outlets, and non-admin accounts. Immutable wallet, earnings, and stock movement history retained; catalogue kept.")
         a.upsert_setting(cur,'testing_quick_login_until','0')
     return redirect('Fresh start complete. Admin and catalogue are ready for setup.', '/admin/staff')
 
