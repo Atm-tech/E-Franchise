@@ -2624,7 +2624,7 @@ def franchise_home(request: Request, period: str = "month", date_from: str = "",
         dockets = conn.execute(
             "SELECT * FROM dockets WHERE franchisee_id=? ORDER BY id DESC LIMIT 10", (user["franchisee_id"],)
         ).fetchall()
-        outlet = conn.execute("SELECT * FROM outlets WHERE id=?", (user["outlet_id"] or 1,)).fetchone()
+        outlet = conn.execute("SELECT * FROM outlets WHERE id=?", (franchise["outlet_id"],)).fetchone()
         earnings = conn.execute(
             "SELECT COALESCE(SUM(amount), 0) total FROM earnings_wallet_ledger WHERE franchisee_id=? AND entry_type='ORDER_COMMISSION'",
             (user["franchisee_id"],),
@@ -3156,7 +3156,10 @@ def create_order(
         if final_status == "EXECUTED" and wallet_required > float(franchise["wallet_balance"]):
             final_status = "ON_HOLD"
 
-        outlet_id = user["outlet_id"] or 1
+        mapped_outlet = cur.execute("SELECT id FROM outlets WHERE id=? AND status='ACTIVE'", (franchise["outlet_id"],)).fetchone()
+        if not mapped_outlet:
+            return RedirectResponse("/franchise/home?error=mapped_outlet_unavailable#checkout", status_code=303)
+        outlet_id = franchise["outlet_id"]
         if final_status == "EXECUTED":
             requested = {}
             for product, item_qty, *_ in lines:
