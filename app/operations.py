@@ -553,6 +553,13 @@ def staff_status(request: Request, user_id: int, status: str = Form(...)):
     return redirect('Staff access updated; previous sessions invalidated')
 
 
+def staff_access_page(request: Request):
+    user=require_user(request,{'ADMIN'})
+    with a.get_conn() as conn:
+        staff=conn.execute("SELECT id,name,role,status,outlet_id,phone FROM users WHERE role IN ('POS','GUARD','DELIVERY') ORDER BY role,name,id").fetchall()
+    return a.templates.TemplateResponse('staff_access.html', {'request':request,'user':user,'staff':staff,'message':request.query_params.get('message','')})
+
+
 def staff_password_reset(request: Request, user_id: int, new_password: str = Form(..., min_length=12, max_length=128)):
     user=require_user(request,{'ADMIN'})
     with a.get_conn() as conn:
@@ -925,7 +932,7 @@ def event_feed(request: Request, after: int = 0):
 
 ROUTES = [
     ('/admin/inventory/receive','POST',receive_inventory),
-    ('/workspace','GET',workspace),('/account','GET',account),('/account/password','POST',password_change),
+    ('/workspace','GET',workspace),('/account','GET',account),('/account/password','POST',password_change),('/admin/staff','GET',staff_access_page),
     ('/pos/orders/{order_id}/claim','POST',claim_order),('/pos/orders/{order_id}/scan','POST',scan_item),
     ('/dispatch/{kind}/{entity_id}/label.pdf','GET',dispatch_label),('/franchise/dispatch-code','POST',issue_code),
     ('/admin/targets','POST',target_program),('/admin/targets/{program_id}/status','POST',target_status),

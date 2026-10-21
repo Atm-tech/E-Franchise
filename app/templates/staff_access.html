@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block content %}
+<header class="app-page-head"><div><p class="eyebrow">ADMIN</p><h1>Staff access</h1><p class="muted">Reset POS, Guard and Delivery passwords. Passwords must be at least 12 characters.</p></div><a href="/admin/dashboard">Back to administration</a></header>
+{% if message %}<div class="order-success"><span class="success-icon">✓</span><div><b>{{ message }}</b></div></div>{% endif %}
+<div class="ops-grid">
+{% for s in staff %}
+<section class="card ops-panel">
+  <p class="eyebrow">{{ s.role }} · {{ s.status }}</p>
+  <h2>{{ s.name }}</h2>
+  <p>Login ID: <b>{{ s.phone }}</b> · Outlet {{ s.outlet_id or '—' }}</p>
+  <form method="post" action="/admin/users/{{ s.id }}/password" class="ops-form">
+    <input type="hidden" name="request_key" value="{{ new_request_key() }}">
+    <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
+    <label>New password<input type="password" name="new_password" minlength="12" maxlength="128" autocomplete="new-password" required></label>
+    <button>Reset {{ s.role|title }} password</button>
+  </form>
+</section>
+{% else %}
+<section class="card ops-panel"><p>No POS, Guard or Delivery accounts found.</p><a href="/admin/dashboard#network">Create a staff account</a></section>
+{% endfor %}
+</div>
+{% endblock %}
