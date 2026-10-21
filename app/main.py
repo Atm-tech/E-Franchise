@@ -1418,11 +1418,12 @@ def init_db() -> None:
         # Explicit one-time recovery for a locked-out admin. The consumed marker
         # lives in the application database, so a stale Render env flag cannot
         # reset the password again on later restarts.
-        if os.getenv("RESET_BOOTSTRAP_ADMIN", "0") == "1" and get_setting(cur, "bootstrap_admin_reset_consumed", "0") != "1":
+        reset_token = os.getenv("RESET_BOOTSTRAP_ADMIN", "").strip()
+        if reset_token and reset_token not in {"0", "false", "False"} and reset_token != get_setting(cur, "bootstrap_admin_reset_token", ""):
             login_id = os.getenv("BOOTSTRAP_ADMIN_LOGIN", "").strip()
             password = os.getenv("BOOTSTRAP_ADMIN_PASSWORD", "")
-            if not login_id or len(password) < 16:
-                raise RuntimeError("One-time admin recovery requires BOOTSTRAP_ADMIN_LOGIN and a 16+ character BOOTSTRAP_ADMIN_PASSWORD")
+            if len(reset_token) < 32 or not login_id or len(password) < 16:
+                raise RuntimeError("One-time admin recovery requires a 32+ character reset token, BOOTSTRAP_ADMIN_LOGIN, and a 16+ character BOOTSTRAP_ADMIN_PASSWORD")
             admin = cur.execute("SELECT id FROM users WHERE phone=? AND role='ADMIN'", (login_id,)).fetchone()
             if admin:
                 cur.execute("UPDATE users SET pin=?,auth_version=auth_version+1 WHERE id=?", (hash_password(password), admin["id"]))
@@ -1430,7 +1431,7 @@ def init_db() -> None:
                 cur.execute("INSERT INTO users(name,role,phone,pin) VALUES('Administrator','ADMIN',?,?)", (login_id, hash_password(password)))
             else:
                 raise RuntimeError("Bootstrap admin login does not match an existing admin account")
-            upsert_setting(cur, "bootstrap_admin_reset_consumed", "1")
+            upsert_setting(cur, "bootstrap_admin_reset_token", reset_token)
         for f in cur.execute("SELECT id FROM franchisees").fetchall():
             cur.execute("INSERT OR IGNORE INTO earnings_wallets(franchisee_id,balance,updated_at) VALUES(?,0,?)", (f["id"], now_str()))
         conn.commit()
