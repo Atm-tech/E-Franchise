@@ -1415,6 +1415,22 @@ def init_db() -> None:
                 if not login_id or len(password) < 12 or password.startswith("replace-"):
                     raise RuntimeError("Set BOOTSTRAP_ADMIN_LOGIN and a 12+ character BOOTSTRAP_ADMIN_PASSWORD for a new production database")
                 cur.execute("INSERT INTO users(name,role,phone,pin) VALUES('Administrator','ADMIN',?,?)", (login_id, hash_password(password)))
+        # Explicit one-time recovery for a locked-out admin. The consumed marker
+        # lives in the application database, so a stale Render env flag cannot
+        # reset the password again on later restarts.
+        if os.getenv("RESET_BOOTSTRAP_ADMIN", "0") == "1" and get_setting(cur, "bootstrap_admin_reset_consumed", "0") != "1":
+            login_id = os.getenv("BOOTSTRAP_ADMIN_LOGIN", "").strip()
+            password = os.getenv("BOOTSTRAP_ADMIN_PASSWORD", "")
+            if not login_id or len(password) < 16:
+                raise RuntimeError("One-time admin recovery requires BOOTSTRAP_ADMIN_LOGIN and a 16+ character BOOTSTRAP_ADMIN_PASSWORD")
+            admin = cur.execute("SELECT id FROM users WHERE phone=? AND role='ADMIN'", (login_id,)).fetchone()
+            if admin:
+                cur.execute("UPDATE users SET pin=?,auth_version=auth_version+1 WHERE id=?", (hash_password(password), admin["id"]))
+            elif not cur.execute("SELECT 1 FROM users WHERE role='ADMIN'").fetchone():
+                cur.execute("INSERT INTO users(name,role,phone,pin) VALUES('Administrator','ADMIN',?,?)", (login_id, hash_password(password)))
+            else:
+                raise RuntimeError("Bootstrap admin login does not match an existing admin account")
+            upsert_setting(cur, "bootstrap_admin_reset_consumed", "1")
         for f in cur.execute("SELECT id FROM franchisees").fetchall():
             cur.execute("INSERT OR IGNORE INTO earnings_wallets(franchisee_id,balance,updated_at) VALUES(?,0,?)", (f["id"], now_str()))
         conn.commit()
