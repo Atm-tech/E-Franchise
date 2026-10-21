@@ -22,10 +22,19 @@
         <p class="eyebrow">SECURE ACCESS</p><h2>Sign in</h2><p class="muted">Enter your credentials to open your assigned workspace.</p>
         {% if error %}<div class="alert">{{ error }}</div>{% endif %}
         <form method="post" action="/login" class="form-grid" id="login-form"><input type="hidden" name="request_key" value="{{ new_request_key() }}"><input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
-          <label>Partner ID<input name="phone" required placeholder="e.g. frn" autofocus autocomplete="username"></label>
+          <label>Login ID<input name="phone" required placeholder="Choose a module below" autofocus autocomplete="username"></label>
           <label>Password<input name="pin" type="password" required placeholder="Your password" autocomplete="current-password"></label>
           <button type="submit">Sign in</button>
         </form>
+        <section class="module-login" aria-label="Module login">
+          <p>Choose your module</p>
+          <div class="module-login-grid">
+            <button type="button" onclick="selectModule('adm')">Admin login</button>
+            <button type="button" onclick="selectModule('pos')">POS login</button>
+            <button type="button" onclick="selectModule('grd')">Guard login</button>
+            <button type="button" onclick="selectModule('dlv')">Delivery login</button>
+          </div>
+        </section>
         {% if testing_accounts %}
         <section class="testing-login" aria-label="Quick login">
           <div class="testing-login-heading"><b>Quick login</b><span>TESTING</span></div>
@@ -40,12 +49,12 @@
             {% endfor %}
           </div>
         </section>
-        {% elif demo_mode %}<div class="demo-access quick-login"><b>Quick login</b><button type="button" onclick="quickLogin('adm','adm@123')">Admin</button><button type="button" onclick="quickLogin('frn','frn@123')">Franchise</button><button type="button" onclick="quickLogin('pos','pos@123')">POS</button><button type="button" onclick="quickLogin('grd','grd@123')">Guard</button><button type="button" onclick="quickLogin('dlv','dlv@123')">Delivery</button></div>{% endif %}
+        {% endif %}
       </div>
     </section>
   </main>
   <div class="offline-pill" role="status" hidden>Offline mode</div>
   <script src="/static/app-shell.js?v=13" defer></script>
-  <script>function quickLogin(user,password){const form=document.getElementById('login-form');form.elements.phone.value=user;form.elements.pin.value=password;form.requestSubmit()}</script>
+  <script>function selectModule(user){const field=document.querySelector('#login-form [name="phone"]');field.value=user;field.focus();document.querySelector('#login-form [name="pin"]').focus()}</script>
 </body>
 </html>
