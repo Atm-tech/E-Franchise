@@ -346,7 +346,7 @@ def workspace(request: Request):
             }
             data.update({k: cur.execute(q).fetchall() for k,q in queries.items()})
             data['settings'] = {r['key']:r['value'] for r in cur.execute('SELECT * FROM settings')}
-            data['pending_settlements'] = cur.execute("SELECT o.outlet_id,x.name,COUNT(*) orders,ROUND(SUM(o.payable_to_outlet),2) amount FROM orders o JOIN outlets x ON x.id=o.outlet_id WHERE o.status='DELIVERED' AND o.id NOT IN (SELECT order_id FROM settlement_orders) GROUP BY o.outlet_id,x.name").fetchall()
+            data['pending_settlements'] = cur.execute("SELECT o.outlet_id,x.name,COUNT(*) orders,ROUND(SUM(CAST(o.payable_to_outlet AS numeric)),2) amount FROM orders o JOIN outlets x ON x.id=o.outlet_id WHERE o.status='DELIVERED' AND o.id NOT IN (SELECT order_id FROM settlement_orders) GROUP BY o.outlet_id,x.name").fetchall()
             data['proofs']=cur.execute('SELECT id,task_id,kind FROM proofs ORDER BY id DESC').fetchall()
         elif user['role'] == 'POS':
             data['picking_required'] = a.get_setting(cur, 'require_picking', '1') == '1'
