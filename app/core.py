@@ -488,11 +488,11 @@ def report_period(period: str, date_from: str = "", date_to: str = "") -> tuple[
     if period == "day":
         start = current.replace(hour=0, minute=0, second=0, microsecond=0)
         end = start + timedelta(days=1)
-        label = f"Today Â· {start.strftime('%d %b %Y')}"
+        label = f"Today · {start.strftime('%d %b %Y')}"
     elif period == "year":
         start = current.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
         end = start.replace(year=start.year + 1)
-        label = f"Year to date Â· {start.year}"
+        label = f"Year to date · {start.year}"
     elif period == "custom" and date_from and date_to:
         try:
             start = datetime.strptime(date_from, "%Y-%m-%d").replace(tzinfo=IST)
@@ -502,11 +502,11 @@ def report_period(period: str, date_from: str = "", date_to: str = "") -> tuple[
         if last < start:
             start, last = last, start
         end = last + timedelta(days=1)
-        label = f"{start.strftime('%d %b %Y')} â€“ {last.strftime('%d %b %Y')}"
+        label = f"{start.strftime('%d %b %Y')} – {last.strftime('%d %b %Y')}"
     else:
         start = current.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         end = start.replace(year=start.year + 1, month=1) if start.month == 12 else start.replace(month=start.month + 1)
-        label = f"Month to date Â· {start.strftime('%B %Y')}"
+        label = f"Month to date · {start.strftime('%B %Y')}"
         period = "month"
     return start.strftime("%Y-%m-%d %H:%M:%S"), end.strftime("%Y-%m-%d %H:%M:%S"), label
 
