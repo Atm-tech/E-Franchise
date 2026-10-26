@@ -488,11 +488,11 @@ def report_period(period: str, date_from: str = "", date_to: str = "") -> tuple[
     if period == "day":
         start = current.replace(hour=0, minute=0, second=0, microsecond=0)
         end = start + timedelta(days=1)
-        label = f"Today · {start.strftime('%d %b %Y')}"
+        label = f"Today Â· {start.strftime('%d %b %Y')}"
     elif period == "year":
         start = current.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
         end = start.replace(year=start.year + 1)
-        label = f"Year to date · {start.year}"
+        label = f"Year to date Â· {start.year}"
     elif period == "custom" and date_from and date_to:
         try:
             start = datetime.strptime(date_from, "%Y-%m-%d").replace(tzinfo=IST)
@@ -502,11 +502,11 @@ def report_period(period: str, date_from: str = "", date_to: str = "") -> tuple[
         if last < start:
             start, last = last, start
         end = last + timedelta(days=1)
-        label = f"{start.strftime('%d %b %Y')} – {last.strftime('%d %b %Y')}"
+        label = f"{start.strftime('%d %b %Y')} â€“ {last.strftime('%d %b %Y')}"
     else:
         start = current.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         end = start.replace(year=start.year + 1, month=1) if start.month == 12 else start.replace(month=start.month + 1)
-        label = f"Month to date · {start.strftime('%B %Y')}"
+        label = f"Month to date Â· {start.strftime('%B %Y')}"
         period = "month"
     return start.strftime("%Y-%m-%d %H:%M:%S"), end.strftime("%Y-%m-%d %H:%M:%S"), label
 
@@ -944,6 +944,8 @@ def product_values_from_row(row: dict[str, Any]) -> tuple[Any, ...]:
     gst_rate = parse_decimal(row.get("gst_rate"), 0.0)
     price_includes_gst = 1 if str(row.get("price_includes_gst", "1")).lower() not in {"0", "false", "no"} else 0
     slab_eligible = 1 if str(row.get("slab_eligible", "1")).lower() not in {"0", "false", "no"} else 0
+    variable_weight = 1 if str(row.get("variable_weight", "1")).lower() not in {"0", "false", "no"} else 0
+    pack_label = str(row.get("pack_label", "1 kg") or "1 kg").strip()
     attributes_json = str(row.get("attributes_json", "{}") or "{}").strip()
     try:
         json.loads(attributes_json)
@@ -984,6 +986,8 @@ def product_values_from_row(row: dict[str, Any]) -> tuple[Any, ...]:
         gst_rate,
         price_includes_gst,
         slab_eligible,
+        variable_weight,
+        pack_label,
         now_str(),
     )
 
@@ -993,8 +997,8 @@ def upsert_product(conn: sqlite3.Connection, row: dict[str, Any]) -> None:
         """
         INSERT INTO products
         (sku_code, product_name, department, mrp, rsp, unit_weight, weight_unit, pack_multiplier, commission_mode, commission_value, status, image_url, brand, attributes_json,
-         category, subcategory, hsn_code, gst_rate, price_includes_gst, slab_eligible, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         category, subcategory, hsn_code, gst_rate, price_includes_gst, slab_eligible, variable_weight, pack_label, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(sku_code) DO UPDATE SET
             product_name=excluded.product_name,
             department=excluded.department,
@@ -1012,6 +1016,8 @@ def upsert_product(conn: sqlite3.Connection, row: dict[str, Any]) -> None:
             gst_rate=excluded.gst_rate,
             price_includes_gst=excluded.price_includes_gst,
             slab_eligible=excluded.slab_eligible,
+            variable_weight=excluded.variable_weight,
+            pack_label=excluded.pack_label,
             brand=CASE WHEN excluded.brand != '' THEN excluded.brand ELSE products.brand END,
             attributes_json=excluded.attributes_json,
             image_url=CASE WHEN excluded.image_url != '' THEN excluded.image_url ELSE products.image_url END
@@ -1081,6 +1087,7 @@ def instant_demo_topup_available():
         return False
     with get_conn() as conn:
         return get_setting(conn.cursor(), "test_wallet_topup_enabled", "0") == "1"
+
 
 
 
