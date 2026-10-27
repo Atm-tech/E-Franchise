@@ -128,9 +128,12 @@ def wallet_entry(
     remarks: str,
     created_by: int | None,
 ) -> float:
-    franchise = cur.execute("SELECT wallet_balance FROM franchisees WHERE id=?", (franchisee_id,)).fetchone()
+    lock = ' FOR UPDATE' if getattr(cur, 'is_postgres', False) else ''
+    franchise = cur.execute("SELECT wallet_balance,status FROM franchisees WHERE id=?" + lock, (franchisee_id,)).fetchone()
     if not franchise:
         raise ValueError("Franchisee not found")
+    if franchise['status'] == 'CANCELLED':
+        raise HTTPException(409, 'This franchise membership has been cancelled')
     if not math.isfinite(amount):
         raise ValueError("Amount must be finite")
     balance = round(float(franchise["wallet_balance"]) + float(amount), 2)
@@ -158,6 +161,12 @@ def earnings_wallet_entry(
     remarks: str,
     created_by: int | None,
 ) -> float:
+    lock = ' FOR UPDATE' if getattr(cur, 'is_postgres', False) else ''
+    franchise = cur.execute('SELECT status FROM franchisees WHERE id=?' + lock, (franchisee_id,)).fetchone()
+    if not franchise:
+        raise ValueError('Franchisee not found')
+    if franchise['status'] == 'CANCELLED':
+        raise HTTPException(409, 'This franchise membership has been cancelled')
     cur.execute(
         "INSERT OR IGNORE INTO earnings_wallets (franchisee_id, balance, updated_at) VALUES (?, 0, ?)",
         (franchisee_id, now_str()),

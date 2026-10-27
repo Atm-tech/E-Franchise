@@ -480,3 +480,4 @@ input.delivery-slider:focus-visible{outline:3px solid #087957;outline-offset:-3p
 @media(max-width:760px){.processing-overview{grid-template-columns:repeat(2,minmax(0,1fr))}.processing-overview>button{gap:9px;padding:12px}}
 .app-loader[hidden]{display:none}
 .onboarding-location{min-width:0;margin:0;padding:16px;border:1px solid var(--line);border-radius:16px}.onboarding-location legend{padding:0 6px;font-weight:700;color:var(--green)}.onboarding-location [role=status]:empty{display:none}.onboarding-location [role=status]{font-size:13px;color:var(--muted);line-height:1.5}
+.membership-cancel-form{display:grid;gap:8px;margin-top:16px;padding-top:16px;border-top:1px solid var(--line)}.membership-cancel-form small{color:var(--muted);font-size:12px;line-height:1.5}

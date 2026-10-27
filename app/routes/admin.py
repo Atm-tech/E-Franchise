@@ -18,8 +18,8 @@ def admin_dashboard(request: Request, message: str | None = None, error: str | N
         conn.commit()
         stats = {
             "pending_orders": conn.execute("SELECT COUNT(*) FROM orders WHERE status NOT IN ('DELIVERED','CANCELLED','PICKED_BY_FRANCHISEE')").fetchone()[0],
-            "pending_franchisees": conn.execute("SELECT COUNT(*) FROM franchisees WHERE status!='ACTIVE'").fetchone()[0],
-            "franchisees": conn.execute("SELECT COUNT(1) c FROM franchisees").fetchone()["c"],
+            "pending_franchisees": conn.execute("SELECT COUNT(*) FROM franchisees WHERE status='INACTIVE'").fetchone()[0],
+            "franchisees": conn.execute("SELECT COUNT(1) c FROM franchisees WHERE status!='CANCELLED'").fetchone()["c"],
             "products": conn.execute("SELECT COUNT(1) c FROM products WHERE status='ACTIVE'").fetchone()["c"],
             "orders": conn.execute("SELECT COUNT(1) c FROM orders").fetchone()["c"],
             "bills": conn.execute("SELECT COUNT(1) c FROM bills").fetchone()["c"],
@@ -32,7 +32,7 @@ def admin_dashboard(request: Request, message: str | None = None, error: str | N
         franchisees = conn.execute(
             """SELECT f.*, COALESCE(ew.balance,0) earnings_wallet_balance
                FROM franchisees f LEFT JOIN earnings_wallets ew ON ew.franchisee_id=f.id
-               ORDER BY f.id DESC LIMIT 8"""
+               WHERE f.status!='CANCELLED' ORDER BY f.id DESC"""
         ).fetchall()
         products = conn.execute("SELECT * FROM products WHERE status='ACTIVE' ORDER BY product_name, sku_code").fetchall()
         inventory = conn.execute("SELECT ib.*,p.sku_code,p.product_name,o.code outlet_code FROM inventory_balances ib JOIN products p ON p.id=ib.product_id JOIN outlets o ON o.id=ib.outlet_id ORDER BY p.product_name,o.code LIMIT 150").fetchall()
@@ -478,10 +478,51 @@ def change_franchise_status(franchisee_id: int, request: Request, status: str = 
     status = "ACTIVE" if status == "ACTIVE" else "INACTIVE"
     with get_conn() as conn:
         cur = conn.cursor()
+        lock = ' FOR UPDATE' if getattr(cur, 'is_postgres', False) else ''
+        franchise = cur.execute("SELECT status FROM franchisees WHERE id=?" + lock, (franchisee_id,)).fetchone()
+        if not franchise:
+            raise HTTPException(404, "Franchise not found")
+        if franchise['status'] == 'CANCELLED':
+            raise HTTPException(409, "This membership has been cancelled and cannot be activated")
         cur.execute("UPDATE franchisees SET status=? WHERE id=?", (status, franchisee_id))
         audit(cur, user, "STATUS_CHANGE", "FRANCHISEE", franchisee_id, status)
         conn.commit()
     return RedirectResponse("/admin/dashboard?message=Franchisee+status+updated#franchisees", status_code=303)
+
+
+@router.post('/admin/franchisees/{franchisee_id}/cancel-membership')
+def cancel_franchise_membership(franchisee_id: int, request: Request, request_key: str = Form(...)) -> RedirectResponse:
+    user = require_role(request, 'ADMIN')
+    if isinstance(user, RedirectResponse):
+        return user
+    with get_conn() as conn:
+        cur = conn.cursor()
+        lock = ' FOR UPDATE' if getattr(cur, 'is_postgres', False) else ''
+        franchise = cur.execute('SELECT * FROM franchisees WHERE id=?' + lock, (franchisee_id,)).fetchone()
+        if not franchise:
+            raise HTTPException(404, 'Franchise not found')
+        if franchise['status'] == 'CANCELLED':
+            return RedirectResponse('/admin/dashboard?message=Membership+already+cancelled#franchisees', status_code=303)
+        if cur.execute("SELECT 1 FROM orders WHERE franchisee_id=? AND status NOT IN ('DELIVERED','CANCELLED','PICKED_BY_FRANCHISEE') LIMIT 1", (franchisee_id,)).fetchone():
+            raise HTTPException(409, 'Close all active and on-hold orders before cancelling membership')
+        if cur.execute("SELECT 1 FROM delivery_tasks WHERE franchisee_id=? AND status NOT IN ('DELIVERED','CANCELLED') LIMIT 1", (franchisee_id,)).fetchone():
+            raise HTTPException(409, 'Close outstanding delivery tasks before cancelling membership')
+        earnings = cur.execute('SELECT balance FROM earnings_wallets WHERE franchisee_id=?', (franchisee_id,)).fetchone()
+        if round(float(franchise['wallet_balance']), 2) != 0 or (earnings and round(float(earnings['balance']), 2) != 0):
+            raise HTTPException(409, 'Settle the purchase wallet and earnings wallet to zero before cancelling membership')
+        if cur.execute("SELECT 1 FROM payment_transactions WHERE franchisee_id=? AND status='PENDING' LIMIT 1", (franchisee_id,)).fetchone():
+            raise HTTPException(409, 'Resolve pending payments before cancelling membership')
+        if cur.execute("""SELECT 1 FROM orders o WHERE o.franchisee_id=? AND o.status='DELIVERED'
+            AND o.commission_released_at IS NULL AND o.commission_total > COALESCE((
+                SELECT SUM(r.commission_reversed) FROM order_returns r WHERE r.order_id=o.id),0) LIMIT 1""", (franchisee_id,)).fetchone():
+            raise HTTPException(409, 'Release and settle pending commissions before cancelling membership')
+        if operations.claim_mutation(cur, user, f'cancel_franchise_membership:{franchisee_id}', request_key):
+            cur.execute("UPDATE franchisees SET status='CANCELLED' WHERE id=?", (franchisee_id,))
+            cur.execute("UPDATE users SET status='INACTIVE',auth_version=auth_version+1 WHERE franchisee_id=? AND role='FRANCHISEE'", (franchisee_id,))
+            audit(cur, user, 'CANCEL_MEMBERSHIP', 'FRANCHISEE', franchisee_id,
+                  f"Cancelled membership for {franchise['shop_name']}; login revoked; order and financial history retained")
+        conn.commit()
+    return RedirectResponse('/admin/dashboard?message=Membership+cancelled#franchisees', status_code=303)
 
 
 @router.post("/admin/outlets")

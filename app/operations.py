@@ -333,7 +333,7 @@ def workspace(request: Request):
         if user['role'] == 'ADMIN':
             queries = {
                 'outlets': 'SELECT * FROM outlets ORDER BY id',
-                'partners': 'SELECT id,shop_name,state_code,latitude,longitude,route_distance_km,delivery_mode FROM franchisees ORDER BY id',
+                'partners': "SELECT id,shop_name,state_code,latitude,longitude,route_distance_km,delivery_mode FROM franchisees WHERE status!='CANCELLED' ORDER BY id",
                 'staff': "SELECT id,name,role,status,outlet_id FROM users ORDER BY id",
                 'programs': 'SELECT * FROM target_programs ORDER BY id',
                 'slabs': 'SELECT s.*,p.name FROM target_slabs s JOIN target_programs p ON p.id=s.program_id ORDER BY p.id,s.threshold_amount',

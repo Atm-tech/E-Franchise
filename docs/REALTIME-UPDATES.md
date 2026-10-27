@@ -42,7 +42,11 @@ The realtime browser test uses an isolated temporary SQLite database and five
 separate authenticated browser contexts. It covers catalogue and wallet changes,
 draft preservation, form success/validation errors, customer editing, checkout,
 POS claiming/scanning/billing/packing, guard receipt/weight checks, polling-only
-clients and reconnect recovery. Production-mode startup and revision tracking
+clients and reconnect recovery. It also covers onboarding GPS capture and
+membership cancellation: confirmation, authorization, unsettled wallet/open-order
+guards, immediate removal, session/token revocation, history retention and replay
+protection. Membership cancellation archives the franchise with `CANCELLED`
+status; it does not erase historical business records. Production-mode startup and revision tracking
 were also checked against a disposable local PostgreSQL 16 cluster.
 
 The older `test_operations.py` fixture patches `app.main.DB_PATH`, although

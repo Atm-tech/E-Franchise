@@ -1,5 +1,6 @@
 """Exercise cross-session updates and AJAX writes against an isolated demo DB."""
 import os
+import json
 from contextlib import closing
 from pathlib import Path
 import socket
@@ -194,6 +195,52 @@ with tempfile.TemporaryDirectory(prefix='aapoorti-realtime-', ignore_cleanup_err
                 franchise.wait_for_function('walletBalance===123457',timeout=15000)
                 assert franchise.evaluate('window.pageSentinel')=='kept'
                 print('PASS: reconnect recovers missed wallet changes without navigation',flush=True)
+                # Membership cancellation revokes access but preserves historical records.
+                gps_id=write("SELECT id FROM franchisees WHERE mobile='GPS-TEST-LOGIN'")[0][0]
+                gps_context=browser.new_context();gps_page=gps_context.new_page()
+                gps_page.goto(base+'/login');gps_page.locator('[name=phone]').fill('GPS-TEST-LOGIN');gps_page.locator('[name=pin]').fill('LocalTestPassword123')
+                gps_page.locator('button[type=submit]').click();gps_page.wait_for_url('**/franchise/home')
+                gps_csrf=gps_page.locator('meta[name=csrf-token]').get_attribute('content')
+                jwt=admin.context.request.post(base+'/api/mobile/token',data={'login':'GPS-TEST-LOGIN','password':'LocalTestPassword123'}).json()['access_token']
+                path=f'/admin/franchisees/{gps_id}/cancel-membership'
+                forbidden=franchise.context.request.post(base+path,form={'request_key':'forbidden-membership-test'},headers={'X-CSRF-Token':franchise.locator('meta[name=csrf-token]').get_attribute('content')},max_redirects=0)
+                assert forbidden.status==303
+                assert admin.context.request.post(base+path,form={'request_key':'no-csrf-membership-test'},max_redirects=0).status==403
+                admin.evaluate("openAdminTab('franchisees')")
+                member=admin.locator(f'[data-franchise-id="{gps_id}"]')
+                button=member.locator('[data-membership-cancel] button')
+                admin.once('dialog',lambda dialog:dialog.dismiss());button.click()
+                assert write('SELECT status FROM franchisees WHERE id=?',(gps_id,))[0][0]=='ACTIVE'
+                write('UPDATE franchisees SET wallet_balance=100 WHERE id=?',(gps_id,))
+                admin.once('dialog',lambda dialog:dialog.accept())
+                with admin.expect_response(lambda response:response.url.endswith(path) and response.request.method=='POST') as attempt:
+                    button.click()
+                assert attempt.value.status==409
+                assert write('SELECT status FROM franchisees WHERE id=?',(gps_id,))[0][0]=='ACTIVE'
+                write('UPDATE franchisees SET wallet_balance=0 WHERE id=?',(gps_id,))
+                held=gps_context.request.post(base+'/api/mobile/franchise/orders',headers={'Authorization':'Bearer '+jwt},form={'product_id':str(product),'qty':'1','status_mode':'ON_HOLD','customer_name':'Historical customer','customer_phone':'9888888888','request_key':'membership-history-order'})
+                assert held.ok and held.json()['ok'],held.text()
+                admin.once('dialog',lambda dialog:dialog.accept())
+                with admin.expect_response(lambda response:response.url.endswith(path) and response.request.method=='POST') as attempt:
+                    button.click()
+                assert attempt.value.status==409
+                held_id=write('SELECT id FROM orders WHERE franchisee_id=?',(gps_id,))[0][0]
+                closed=gps_context.request.post(base+f'/franchise/orders/{held_id}/cancel',form={'request_key':'membership-close-hold'},headers={'X-CSRF-Token':gps_csrf})
+                assert closed.ok
+                admin.once('dialog',lambda dialog:dialog.accept());button.click()
+                member.wait_for(state='detached',timeout=15000)
+                assert admin.evaluate('window.pageSentinel')=='kept'
+                assert write('SELECT status FROM franchisees WHERE id=?',(gps_id,))[0][0]=='CANCELLED'
+                assert write('SELECT status FROM users WHERE franchisee_id=?',(gps_id,))[0][0]=='INACTIVE'
+                assert write('SELECT COUNT(*) FROM orders WHERE id=?',(held_id,))[0][0]==1
+                assert gps_context.request.get(base+'/api/mobile/me',headers={'Authorization':'Bearer '+jwt}).status==401
+                gps_page.wait_for_url('**/login',timeout=15000)
+                token=admin.locator('meta[name=csrf-token]').get_attribute('content')
+                assert admin.context.request.post(base+f'/admin/franchisees/{gps_id}/status',form={'status':'ACTIVE'},headers={'X-CSRF-Token':token},max_redirects=0).status==409
+                replay=admin.context.request.post(base+path,form={'request_key':'membership-repeat'},headers={'X-CSRF-Token':token},max_redirects=0)
+                assert replay.status==303
+                assert write("SELECT COUNT(*) FROM audit_logs WHERE action='CANCEL_MEMBERSHIP' AND entity_id=?",(gps_id,))[0][0]==1
+                print('PASS: admin-only, CSRF-protected membership cancellation confirms intent, blocks dues/open orders, removes the card without reload, revokes sessions/tokens, retains history and is replay-safe',flush=True)
                 assert not errors, errors
                 browser.close()
         except Exception:

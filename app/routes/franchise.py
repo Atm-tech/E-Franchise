@@ -573,7 +573,8 @@ def create_order(
         return RedirectResponse("/franchise/home?error=customer_details#checkout", status_code=303)
     with get_conn() as conn:
         cur = conn.cursor()
-        franchise = cur.execute("SELECT * FROM franchisees WHERE id=?", (user["franchisee_id"],)).fetchone()
+        lock = ' FOR UPDATE' if getattr(cur, 'is_postgres', False) else ''
+        franchise = cur.execute("SELECT * FROM franchisees WHERE id=?" + lock, (user["franchisee_id"],)).fetchone()
         try:
             cart = json.loads(cart_json) if cart_json else [{"id": product_id, "qty": qty}]
         except (json.JSONDecodeError, TypeError):
