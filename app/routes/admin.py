@@ -103,6 +103,7 @@ def admin_dashboard(request: Request, message: str | None = None, error: str | N
             "stats": stats,
             "franchisees": franchisees,
             "products": products,
+            "departments": sorted({p["department"] for p in products if p["department"]}, key=str.casefold),
             "inventory": inventory,
             "inventory_movements": inventory_movements,
             "orders": orders,
