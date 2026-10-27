@@ -16,6 +16,34 @@
     if (!node.open) node.showModal();
   }
 
+  let toastTimer;
+  function success(message) {
+    if (!message) return;
+    let node = document.getElementById('ui-success-toast');
+    if (!node) {
+      node = document.createElement('div'); node.id = 'ui-success-toast';
+      node.setAttribute('role', 'status'); node.setAttribute('aria-live', 'polite');
+      node.style.cssText = 'position:fixed;top:calc(env(safe-area-inset-top,0px) + 20px);left:50%;transform:translateX(-50%);width:min(90vw,460px);box-sizing:border-box;padding:16px 20px;display:flex;align-items:center;gap:16px;border-radius:14px;background:#0b4f3c;color:white;box-shadow:0 8px 32px #0004;z-index:2147483646';
+      const text = document.createElement('span'); text.style.flex = '1';
+      const close = document.createElement('button'); close.type = 'button';
+      close.textContent = '?'; close.setAttribute('aria-label', 'Dismiss notification');
+      close.style.cssText = 'background:transparent;color:white;border:0;padding:4px;font-size:24px;min-width:32px';
+      close.addEventListener('click', () => { node.hidden = true; node.style.display = 'none'; clearTimeout(toastTimer); });
+      node.append(text, close); document.body.append(node);
+    }
+    node.querySelector('span').textContent = '? ' + message;
+    node.hidden = false; node.style.display = 'flex';
+    clearTimeout(toastTimer); toastTimer = setTimeout(() => { node.hidden = true; node.style.display = 'none'; }, 5000);
+  }
+  window.AppNotify = {success, error: notice};
+  const initialSuccess = document.querySelector('main .order-success');
+  if (initialSuccess) success(initialSuccess.querySelector('b')?.textContent || initialSuccess.textContent.trim());
+  else if (new URL(location.href).searchParams.get('message')) success(new URL(location.href).searchParams.get('message'));
+  document.addEventListener('app:submitted', event => {
+    if (!event.detail.ok) return;
+    const url = event.detail.url;
+    success(url.searchParams.get('message') || 'Saved successfully');
+  });
   window.AppErrors = {show: notice};
   window.alert = message => notice(String(message));
   const seen = new WeakMap();
