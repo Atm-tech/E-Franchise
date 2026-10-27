@@ -605,16 +605,29 @@ def create_staff_user(
     return RedirectResponse("/admin/dashboard?message=Staff+user+created#network", status_code=303)
 
 
+def _optional_rule_id(value: str, label: str) -> int | None:
+    if not value.strip():
+        return None
+    try:
+        result = int(value)
+    except ValueError:
+        raise HTTPException(400, f"Choose a valid {label.lower()}")
+    if result <= 0:
+        raise HTTPException(400, f"Choose a valid {label.lower()}")
+    return result
+
+
 @router.post("/admin/commissions")
 def create_commission_rule(
     request: Request,
-    scope: str = Form(...), department: str = Form(""), product_id: int | None = Form(None),
+    scope: str = Form(...), department: str = Form(""), product_id: str = Form(""),
     commission_type: str = Form("PERCENT"), commission_value: float = Form(...),
     starts_on: str = Form(""), ends_on: str = Form(""),
 ) -> RedirectResponse:
     user = require_role(request, "ADMIN")
     if isinstance(user, RedirectResponse):
         return user
+    product_id = _optional_rule_id(product_id, "Product")
     operations.validate_dates(starts_on, ends_on)
     if not math.isfinite(commission_value) or (commission_type == "PERCENT" and commission_value > 100):
         raise HTTPException(400, "Invalid commission amount")
@@ -718,13 +731,15 @@ def record_order_return(
 @router.post("/admin/promotions")
 def create_promotion(
     request: Request,
-    name: str = Form(...), scope: str = Form(...), department: str = Form(""), product_id: int | None = Form(None),
-    franchisee_id: int | None = Form(None),
+    name: str = Form(...), scope: str = Form(...), department: str = Form(""), product_id: str = Form(""),
+    franchisee_id: str = Form(""),
     discount_type: str = Form("PERCENT"), discount_value: float = Form(...), starts_on: str = Form(""), ends_on: str = Form(""),
 ) -> RedirectResponse:
     user = require_role(request, "ADMIN")
     if isinstance(user, RedirectResponse):
         return user
+    product_id = _optional_rule_id(product_id, "Product")
+    franchisee_id = _optional_rule_id(franchisee_id, "Franchise")
     operations.validate_dates(starts_on, ends_on)
     if not math.isfinite(discount_value) or discount_type not in {"PERCENT", "FIXED"} or (discount_type == "PERCENT" and discount_value > 100):
         raise HTTPException(400, "Invalid promotion discount")

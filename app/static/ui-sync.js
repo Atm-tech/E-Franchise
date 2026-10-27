@@ -25,13 +25,22 @@
     });
   }
   function notice(message) {
-    let node = document.getElementById('ui-sync-status');
+    let node = document.getElementById('ui-error-popup');
     if (!node) {
-      node = document.createElement('p'); node.id = 'ui-sync-status'; node.className = 'alert';
-      node.setAttribute('role', 'status'); document.querySelector('main').prepend(node);
+      node = document.createElement('dialog'); node.id = 'ui-error-popup';
+      node.setAttribute('aria-label', 'Action needed');
+      node.style.cssText = 'position:fixed;inset:0;margin:auto;width:min(90vw,460px);max-height:80vh;overflow:auto;padding:24px;border:2px solid #b42318;border-radius:18px;box-shadow:0 20px 80px #0005;background:white;color:#182b26;z-index:2147483647';
+      const title = document.createElement('h2'); title.textContent = 'Action needed';
+      const text = document.createElement('p'); text.setAttribute('role', 'alert');
+      const close = document.createElement('button'); close.type = 'button'; close.textContent = 'OK';
+      close.addEventListener('click', () => node.close());
+      node.append(title, text, close); document.body.append(node);
     }
-    node.textContent = message;
+    node.querySelector('p').textContent = message;
+    if (!node.open) node.showModal();
   }
+  const initialError = document.querySelector('main .order-error,main .alert.error');
+  if (initialError) notice(initialError.textContent.trim());
   function apply(doc, {submitted = null, reset = false} = {}) {
     const current = document.querySelector('main'), next = doc.querySelector('main');
     if (!current || !next || !doc.querySelector('form[action="/logout"]') ||
@@ -130,7 +139,7 @@
       const response = await originalFetch(url, {method:'POST',body:data,headers:{'X-UI-Update':'1'}});
       if (!response.ok) {
         let message = 'Could not save. Your entries are kept; please try again.';
-        try { const error = await response.json(); if (typeof error.detail === 'string') message = error.detail; } catch { /* Non-JSON error. */ }
+        try { const error = await response.json(); if (typeof error.detail === 'string') message = error.detail; else if (Array.isArray(error.detail)) message = error.detail.map(item => { const field = String(item.loc?.at(-1) || 'Field').replaceAll('_', ' '); return field + ': ' + item.msg; }).join('\n'); } catch { /* Non-JSON error. */ }
         throw new Error(message);
       }
       const destination = new URL(response.url);
@@ -142,6 +151,7 @@
       const doc = parse(await response.text());
       doc.querySelectorAll('main .order-success,main .order-error,main > .alert').forEach(node => node.setAttribute('data-ui-flash',''));
       apply(doc, {submitted:form, reset}); applied = true;
+      if (!reset) notice(destination.searchParams.get('error') || doc.querySelector('.order-error')?.textContent || 'Could not save. Please check your entries.');
       document.dispatchEvent(new CustomEvent('app:submitted', {detail:{form, url:destination, ok:reset}}));
       schedule();
     } catch (error) {

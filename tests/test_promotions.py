@@ -8,11 +8,25 @@ class PromotionTests(unittest.TestCase):
     setUp = fixtures.CommissionDisplayTests.setUp
     tearDown = fixtures.CommissionDisplayTests.tearDown
 
+    def test_department_commission_accepts_empty_product_select(self):
+        page = self.client.get('/admin/dashboard')
+        csrf = re.search(r'name="csrf_token" value="([^"]+)"', page.text)[1]
+        response = self.client.post('/admin/commissions', data={
+            'csrf_token': csrf, 'scope': 'DEPARTMENT', 'department': 'FMCG',
+            'product_id': '', 'commission_type': 'PERCENT', 'commission_value': 5,
+            'starts_on': '2026-10-27', 'ends_on': '',
+        }, follow_redirects=False)
+        self.assertEqual(response.status_code, 303)
+        with core.get_conn() as conn:
+            rule = conn.execute("SELECT * FROM commission_rules WHERE department='FMCG'").fetchone()
+            self.assertEqual(rule['commission_value'], 5)
+            self.assertIsNone(rule['product_id'])
+
     def test_no_expiry_and_removal(self):
         page = self.client.get('/admin/dashboard')
         csrf = re.search(r'name="csrf_token" value="([^"]+)"', page.text)[1]
         response = self.client.post('/admin/promotions', data={
-            'csrf_token': csrf, 'name': 'Forever test', 'scope': 'PRODUCT',
+            'csrf_token': csrf, 'name': 'Forever test', 'scope': 'PRODUCT', 'franchisee_id': '',
             'product_id': self.id, 'discount_type': 'PERCENT',
             'discount_value': 10, 'starts_on': '', 'ends_on': '',
         }, follow_redirects=False)
