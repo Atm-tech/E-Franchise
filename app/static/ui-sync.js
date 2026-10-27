@@ -24,23 +24,7 @@
       form.dataset.uiKey = base + ':' + index;
     });
   }
-  function notice(message) {
-    let node = document.getElementById('ui-error-popup');
-    if (!node) {
-      node = document.createElement('dialog'); node.id = 'ui-error-popup';
-      node.setAttribute('aria-label', 'Action needed');
-      node.style.cssText = 'position:fixed;inset:0;margin:auto;width:min(90vw,460px);max-height:80vh;overflow:auto;padding:24px;border:2px solid #b42318;border-radius:18px;box-shadow:0 20px 80px #0005;background:white;color:#182b26;z-index:2147483647';
-      const title = document.createElement('h2'); title.textContent = 'Action needed';
-      const text = document.createElement('p'); text.setAttribute('role', 'alert');
-      const close = document.createElement('button'); close.type = 'button'; close.textContent = 'OK';
-      close.addEventListener('click', () => node.close());
-      node.append(title, text, close); document.body.append(node);
-    }
-    node.querySelector('p').textContent = message;
-    if (!node.open) node.showModal();
-  }
-  const initialError = document.querySelector('main .order-error,main .alert.error');
-  if (initialError) notice(initialError.textContent.trim());
+  const notice = message => window.AppErrors.show(message);
   function apply(doc, {submitted = null, reset = false} = {}) {
     const current = document.querySelector('main'), next = doc.querySelector('main');
     if (!current || !next || !doc.querySelector('form[action="/logout"]') ||

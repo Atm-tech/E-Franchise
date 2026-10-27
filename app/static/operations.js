@@ -24,6 +24,7 @@
         2:'Current location is unavailable. Try again or enter coordinates manually.',
         3:'Location request timed out. Try again or enter coordinates manually.'};
       output.textContent = messages[error.code] || 'Unable to capture location. Enter coordinates manually.';
+      window.AppErrors?.show(output.textContent);
       button.disabled = false;
     }, {enableHighAccuracy:true, timeout:15000, maximumAge:0});
   });
@@ -43,8 +44,9 @@
           const result = await fetch(`/delivery/tasks/${id}/location`, {method:'POST', headers:{'X-CSRF-Token':csrf}, body});
           const data = await result.json();
           output.textContent = result.ok ? 'Current location saved.' : data.detail;
-        } catch { output.textContent = 'Unable to save location. Check your connection.'; }
-      }, error => { output.textContent = error.message; }, {enableHighAccuracy:true, timeout:15000, maximumAge:0});
+          if (!result.ok) window.AppErrors?.show(output.textContent);
+        } catch { output.textContent = 'Unable to save location. Check your connection.'; window.AppErrors?.show(output.textContent); }
+      }, error => { output.textContent = error.message; window.AppErrors?.show(error.message); }, {enableHighAccuracy:true, timeout:15000, maximumAge:0});
     });
   }); }
   bind();
