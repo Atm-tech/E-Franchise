@@ -72,7 +72,7 @@ def admin_dashboard(request: Request, message: str | None = None, error: str | N
             "SELECT cr.*, p.product_name FROM commission_rules cr LEFT JOIN products p ON p.id=cr.product_id ORDER BY cr.id DESC LIMIT 20"
         ).fetchall()
         promotions = conn.execute(
-            "SELECT pr.*, p.product_name FROM promotions pr LEFT JOIN products p ON p.id=pr.product_id ORDER BY pr.id DESC LIMIT 20"
+            "SELECT pr.*, p.product_name FROM promotions pr LEFT JOIN products p ON p.id=pr.product_id WHERE pr.status='ACTIVE' ORDER BY pr.id DESC"
         ).fetchall()
         target_slabs = conn.execute(
             """SELECT tp.code, tp.name, tp.scope, tp.department, tp.product_id, tp.period_type, tp.timezone,
@@ -744,3 +744,20 @@ def create_promotion(
         audit(cur, user, "CREATE", "PROMOTION", cur.lastrowid, name)
         conn.commit()
     return RedirectResponse("/admin/dashboard?message=Promotion+saved#rules", status_code=303)
+
+
+@router.post("/admin/promotions/{promotion_id}/remove")
+def remove_promotion(request: Request, promotion_id: int) -> RedirectResponse:
+    user = require_role(request, "ADMIN")
+    if isinstance(user, RedirectResponse):
+        return user
+    with get_conn() as conn:
+        cur = conn.cursor()
+        promotion = cur.execute("SELECT * FROM promotions WHERE id=?", (promotion_id,)).fetchone()
+        if not promotion:
+            raise HTTPException(404, "Promotion not found")
+        cur.execute("UPDATE promotions SET status='INACTIVE' WHERE id=? AND status='ACTIVE'", (promotion_id,))
+        if cur.rowcount:
+            audit(cur, user, "REMOVE", "PROMOTION", promotion_id, promotion["name"])
+        conn.commit()
+    return RedirectResponse("/admin/dashboard?message=Promotion+removed#rules", status_code=303)
