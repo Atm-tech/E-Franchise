@@ -69,7 +69,7 @@ def admin_dashboard(request: Request, message: str | None = None, error: str | N
         outlets = conn.execute("SELECT * FROM outlets ORDER BY id").fetchall()
         staff = conn.execute("SELECT u.*, o.code outlet_code FROM users u LEFT JOIN outlets o ON o.id=u.outlet_id ORDER BY u.id DESC").fetchall()
         commission_rules = conn.execute(
-            "SELECT cr.*, p.product_name FROM commission_rules cr LEFT JOIN products p ON p.id=cr.product_id ORDER BY cr.id DESC LIMIT 20"
+            "SELECT cr.*, p.product_name FROM commission_rules cr LEFT JOIN products p ON p.id=cr.product_id WHERE cr.status='ACTIVE' ORDER BY cr.id DESC"
         ).fetchall()
         promotions = conn.execute(
             "SELECT pr.*, p.product_name FROM promotions pr LEFT JOIN products p ON p.id=pr.product_id WHERE pr.status='ACTIVE' ORDER BY pr.id DESC"
@@ -777,3 +777,42 @@ def remove_promotion(request: Request, promotion_id: int) -> RedirectResponse:
             audit(cur, user, "REMOVE", "PROMOTION", promotion_id, promotion["name"])
         conn.commit()
     return RedirectResponse("/admin/dashboard?message=Promotion+removed#rules", status_code=303)
+
+
+@router.post("/admin/commissions/{rule_id}/edit")
+def edit_commission_rule(
+    request: Request, rule_id: int, commission_type: str = Form(...),
+    commission_value: float = Form(...), starts_on: str = Form(""), ends_on: str = Form(""),
+) -> RedirectResponse:
+    user = require_role(request, "ADMIN")
+    if isinstance(user, RedirectResponse):
+        return user
+    operations.validate_dates(starts_on, ends_on)
+    if commission_type not in {"PERCENT", "FIXED"} or not math.isfinite(commission_value) or commission_value < 0 or (commission_type == "PERCENT" and commission_value > 100):
+        raise HTTPException(400, "Enter a valid commission rate")
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("UPDATE commission_rules SET commission_type=?,commission_value=?,starts_on=?,ends_on=? WHERE id=? AND status='ACTIVE'",
+                    (commission_type, commission_value, starts_on or None, ends_on or None, rule_id))
+        if not cur.rowcount:
+            raise HTTPException(404, "Active commission rule not found")
+        audit(cur, user, "EDIT", "COMMISSION_RULE", rule_id, f"{commission_type} {commission_value}; {starts_on} to {ends_on or 'No expiry'}")
+        conn.commit()
+    return RedirectResponse("/admin/dashboard?message=Commission+rule+updated#rules", status_code=303)
+
+
+@router.post("/admin/commissions/{rule_id}/remove")
+def remove_commission_rule(request: Request, rule_id: int) -> RedirectResponse:
+    user = require_role(request, "ADMIN")
+    if isinstance(user, RedirectResponse):
+        return user
+    with get_conn() as conn:
+        cur = conn.cursor()
+        rule = cur.execute("SELECT * FROM commission_rules WHERE id=?", (rule_id,)).fetchone()
+        if not rule:
+            raise HTTPException(404, "Commission rule not found")
+        cur.execute("UPDATE commission_rules SET status='INACTIVE' WHERE id=? AND status='ACTIVE'", (rule_id,))
+        if cur.rowcount:
+            audit(cur, user, "REMOVE", "COMMISSION_RULE", rule_id, "Commission rule disabled")
+        conn.commit()
+    return RedirectResponse("/admin/dashboard?message=Commission+rule+removed#rules", status_code=303)
