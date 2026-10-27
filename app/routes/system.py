@@ -7,6 +7,14 @@ from app.core import *  # noqa: F401,F403
 router = APIRouter()
 
 
+@router.get('/api/ui-state')
+def ui_state(request: Request):
+    operations.require_user(request)
+    from app.realtime import revision
+    with get_conn() as conn:
+        return {'revision': revision(conn)}
+
+
 @router.get("/media/r2/{object_key:path}", include_in_schema=False)
 def r2_media(request: Request, object_key: str) -> Response:
     if not current_user(request):

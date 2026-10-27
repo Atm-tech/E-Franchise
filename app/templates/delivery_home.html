@@ -9,7 +9,7 @@
 <div class="section-head"><div><p class="eyebrow">ROUTE QUEUE</p><h2>Your assignments</h2></div></div>
 <div class="delivery-list" data-delivery-dashboard>
 {% for t in tasks %}
-<article class="delivery-card {{ 'complete' if t.status == 'DELIVERED' else '' }}" data-delivery-state="{{ 'completed' if t.status == 'DELIVERED' else 'active' }}" {% if t.status == 'OUT_FOR_DELIVERY' %}data-live-driver-task="{{ t.id }}"{% endif %}>
+<article data-ui-key="delivery:{{ t.id }}" class="delivery-card {{ 'complete' if t.status == 'DELIVERED' else '' }}" data-delivery-state="{{ 'completed' if t.status == 'DELIVERED' else 'active' }}" {% if t.status == 'OUT_FOR_DELIVERY' %}data-live-driver-task="{{ t.id }}"{% endif %}>
   <div class="delivery-card-head"><span class="entity-icon">{{ 'B' if t.entity_type == 'BILL' else 'D' }}</span><div><b>{{ t.entity_number }}</b><small>{{ t.shop_name }} · Task #{{ t.id }} · {{ t.buyer_name or 'Franchise dispatch' }}</small></div><span class="status {{ t.status|lower }}">{{ t.status|replace('_',' ')|title }}</span></div>
   <div class="delivery-customer"><span>Deliver to franchisee</span><h3>{{ t.shop_name }} · {{ t.customer_name }}</h3><p>{{ t.delivery_address }}</p><div><a href="tel:{{ t.customer_phone }}">Call franchisee</a><a href="https://www.google.com/maps/search/?api=1&query={{ t.delivery_address|urlencode }}" target="_blank" rel="noopener">Open map</a></div></div>
   <div class="delivery-progress"><span class="done">Assigned</span><i></i><span class="{{ 'done' if t.status in ['ACCEPTED','PICKED_UP','OUT_FOR_DELIVERY','DELIVERED'] else '' }}">Accepted</span><i></i><span class="{{ 'done' if t.status in ['PICKED_UP','OUT_FOR_DELIVERY','DELIVERED'] else '' }}">Picked</span><i></i><span class="{{ 'done' if t.status in ['OUT_FOR_DELIVERY','DELIVERED'] else '' }}">En route</span><i></i><span class="{{ 'done' if t.status == 'DELIVERED' else '' }}">Done</span></div>
@@ -38,5 +38,6 @@
 const deliveryButtons=document.querySelectorAll('[data-delivery-filter]');
 function filterDeliveries(filter,button){sessionStorage.setItem('aapoorti-delivery-filter-{{ user.id }}',filter);deliveryButtons.forEach(item=>item.classList.toggle('active',item===button));document.querySelectorAll('[data-delivery-state]').forEach(card=>card.hidden=filter!=='all'&&card.dataset.deliveryState!==filter)}
 deliveryButtons.forEach(button=>button.addEventListener('click',()=>{filterDeliveries(button.dataset.deliveryFilter,button);window.scrollTo({top:0,behavior:'smooth'})}));const savedDeliveryFilter=sessionStorage.getItem('aapoorti-delivery-filter-{{ user.id }}')||'active';const savedDeliveryButton=Array.from(deliveryButtons).find(button=>button.dataset.deliveryFilter===savedDeliveryFilter)||deliveryButtons[0];filterDeliveries(savedDeliveryButton.dataset.deliveryFilter,savedDeliveryButton);
+document.addEventListener('app:updated',()=>{const button=document.querySelector('[data-delivery-filter].active')||deliveryButtons[0];filterDeliveries(button.dataset.deliveryFilter,button);});
 </script>
 {% endblock %}

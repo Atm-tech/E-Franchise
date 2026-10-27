@@ -25,7 +25,9 @@
           const data = new URLSearchParams(row); data.set('csrf_token', form.elements.csrf_token.value);
           const result = await fetch('/franchise/orders', {method:'POST', body:data});
           if (!result.ok || !new URL(result.url).searchParams.has('created')) throw new Error('Sign in again or check the order details. This draft has been retained.');
-          save(read().filter(r => r.request_key !== row.request_key)); location.assign(result.url);
+          save(read().filter(r => r.request_key !== row.request_key));
+          if (window.AppUI) window.AppUI.schedule();
+          else location.assign(result.url);
         } catch (error) { note.textContent = error.message; submit.disabled = false; }
       };
       const remove = document.createElement('button'); remove.type = 'button'; remove.textContent = 'Discard draft';

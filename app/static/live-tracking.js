@@ -1,6 +1,6 @@
 (() => {
   const csrf = document.querySelector('meta[name="csrf-token"]')?.content || '';
-  const driverTasks = [...document.querySelectorAll('[data-live-driver-task]')];
+  let driverTasks = [...document.querySelectorAll('[data-live-driver-task]')];
   const trackingList = document.getElementById('live-tracking-list');
   const cards = new Map();
   const nativeApp = Boolean(window.Capacitor?.isNativePlatform?.());
@@ -82,8 +82,15 @@
     sharing = true;
   }
 
-  document.querySelectorAll('[data-start-live-sharing]').forEach(button => button.addEventListener('click', startSharing));
-  document.querySelectorAll('[data-stop-live-sharing]').forEach(button => button.addEventListener('click', stopSharing));
+  document.addEventListener('click', event => {
+    if (event.target.closest('[data-start-live-sharing]')) startSharing();
+    if (event.target.closest('[data-stop-live-sharing]')) stopSharing();
+  });
+  document.addEventListener('app:updated', () => {
+    driverTasks = [...document.querySelectorAll('[data-live-driver-task]')];
+    if (!driverTasks.length && sharing) stopSharing();
+    else if (sharing) displaySharing('Live sharing is active.', true);
+  });
   document.querySelector('form[action="/logout"]')?.addEventListener('submit', stopSharing);
 
   if (driverTasks.length && nativeSharingActive) {

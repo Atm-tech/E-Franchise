@@ -115,19 +115,26 @@ def catalogue(request: Request):
 
 async def stream(request: Request):
     ops.require_user(request)
+    from app.realtime import revision
+    def state():
+        with ops.a.get_conn() as conn:
+            return revision(conn)
     async def updates():
         cursor = None
+        previous_revision = None
         while not await request.is_disconnected():
             try:
                 if request.headers.get('authorization'):
                     await run_in_threadpool(token_user, request)
                 feed = await run_in_threadpool(ops.event_feed, request, cursor or 0)
+                current_revision = await run_in_threadpool(state)
             except HTTPException:
                 yield 'event: expired\ndata: {}\n\n'
                 return
-            if cursor is None or feed['events']:
-                yield 'data: ' + json.dumps(feed | {'initial': cursor is None}) + '\n\n'
+            if cursor is None or feed['events'] or current_revision != previous_revision:
+                yield 'data: ' + json.dumps(feed | {'initial': cursor is None, 'revision': current_revision}) + '\n\n'
                 cursor = feed['cursor']
+                previous_revision = current_revision
             else:
                 yield ': heartbeat\n\n'
             await asyncio.sleep(3)

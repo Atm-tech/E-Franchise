@@ -1,11 +1,15 @@
 (() => {
-  document.querySelectorAll('input[name="sku"],input[name="dispatch_number"]').forEach(input => {
+  const bound = new WeakSet();
+  function bind() { document.querySelectorAll('input[name="sku"],input[name="dispatch_number"]').forEach(input => {
+    if (bound.has(input)) return;
+    bound.add(input);
     const button = document.createElement('button'); button.type='button'; button.textContent='Scan with camera';
+    button.setAttribute('data-ui-preserve', '');
     input.parentElement.after(button);
     button.addEventListener('click',async()=>{
       if (!navigator.mediaDevices) { alert('Camera scanning is unavailable. Use a handheld scanner or type the barcode.'); return; }
       let stream, controls;let running=true;
-      const panel=document.createElement('div');const video=document.createElement('video');video.autoplay=true;video.playsInline=true;video.style.maxWidth='100%';
+      const panel=document.createElement('div');panel.setAttribute('data-ui-preserve','');const video=document.createElement('video');video.autoplay=true;video.playsInline=true;video.style.maxWidth='100%';
       const stop=document.createElement('button');stop.type='button';stop.textContent='Close camera';panel.append(video,stop);button.after(panel);button.disabled=true;
       const close=()=>{running=false;controls?.stop();stream?.getTracks().forEach(track=>track.stop());panel.remove();button.disabled=false;};stop.onclick=close;
       try {
@@ -32,5 +36,7 @@
         scan();setTimeout(close,60000);
       } catch {close();alert('Camera could not be opened. Use the scanner input instead.');}
     });
-  });
+  }); }
+  bind();
+  document.addEventListener('app:updated', bind);
 })();

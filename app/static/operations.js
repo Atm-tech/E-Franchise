@@ -1,6 +1,9 @@
 (() => {
   const csrf = document.querySelector('meta[name="csrf-token"]')?.content;
-  document.querySelectorAll('[data-capture-location]').forEach(button => {
+  const bound = new WeakSet();
+  function bind() { document.querySelectorAll('[data-capture-location]').forEach(button => {
+    if (bound.has(button)) return;
+    bound.add(button);
     button.addEventListener('click', () => {
       const id = button.dataset.captureLocation;
       const output = document.querySelector(`[data-location-result="${id}"]`);
@@ -15,5 +18,7 @@
         } catch { output.textContent = 'Unable to save location. Check your connection.'; }
       }, error => { output.textContent = error.message; }, {enableHighAccuracy:true, timeout:15000, maximumAge:0});
     });
-  });
+  }); }
+  bind();
+  document.addEventListener('app:updated', bind);
 })();

@@ -13,11 +13,11 @@
   <link rel="manifest" href="/static/manifest.webmanifest">
   <link rel="icon" href="/static/app-icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/static/app-icon.svg">
-  <link rel="stylesheet" href="/static/style.css?v=48">
+  <link rel="stylesheet" href="/static/style.css?v=49">
   <link rel="stylesheet" href="/static/vendor/leaflet/leaflet.css?v=1">
 <meta name="csrf-token" content="{{ request.session.get('csrf_token','') }}">
 </head>
-<body class="app-shell role-{{ user.role|lower if user else 'guest' }}">
+<body class="app-shell role-{{ user.role|lower if user else 'guest' }}" data-user-id="{{ user.id if user else '' }}">
   {% include "_loader.html" %}
   <header class="topbar">
     <a class="brand" href="/"><span class="brand-mark">A</span><span>Aapoorti <small>PARTNER APP</small></span></a>
@@ -30,12 +30,14 @@
   <main class="container {% block mode_class %}{% endblock %}">{% block content %}{% endblock %}</main>
   <div class="offline-pill" role="status" hidden>Offline mode</div>
   <script src="/static/module-badges.js?v=4" defer></script>
-  <script src="/static/app-shell.js?v=13" defer></script>
-  <script src="/static/live-events.js?v=2" defer></script>
-  <script src="/static/operations.js?v=1" defer></script>
+  <script src="/static/app-shell.js?v=14" defer></script>
+  <script src="/static/vendor/morphdom-2.7.8.js" defer></script>
+  <script src="/static/ui-sync.js?v=1" defer></script>
+  <script src="/static/live-events.js?v=3" defer></script>
+  <script src="/static/operations.js?v=2" defer></script>
   <script src="/static/vendor/leaflet/leaflet.js?v=1" defer></script>
   <script src="/static/vendor/background-geolocation.js?v=1" defer></script>
-  <script src="/static/live-tracking.js?v=3" defer></script>
-  <script src="/static/offline-orders.js?v=1" defer></script>
+  <script src="/static/live-tracking.js?v=4" defer></script>
+  <script src="/static/offline-orders.js?v=2" defer></script>
 </body>
 </html>

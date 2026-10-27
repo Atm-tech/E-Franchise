@@ -61,7 +61,7 @@ def franchise_home(request: Request, period: str = "month", date_from: str = "",
             product["is_power_pick"] = product["id"] in power_pick_ids
         on_hold_count = conn.execute("SELECT COUNT(*) FROM orders WHERE franchisee_id=? AND status='ON_HOLD'", (user["franchisee_id"],)).fetchone()[0]
         orders = conn.execute(
-            """SELECT o.*, b.id bill_id, b.bill_number,
+            """SELECT o.*, b.id bill_id, b.bill_number, COALESCE(b.status,o.status) display_status,
                (SELECT MAX(e.created_at) FROM order_events e WHERE e.order_id=o.id AND e.status='CUSTOMER_DELIVERED') customer_delivered_at FROM orders o
                LEFT JOIN bills b ON b.order_id=o.id
                WHERE o.franchisee_id=? ORDER BY o.created_at ASC, o.id ASC""", (user["franchisee_id"],)

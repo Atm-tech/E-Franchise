@@ -33,7 +33,7 @@
   else window.addEventListener('load', hideLoader, { once: true });
   window.setTimeout(hideLoader, 7000);
   document.addEventListener('submit', event => {
-    if (!event.defaultPrevented) showLoader();
+    setTimeout(() => { if (!event.defaultPrevented) showLoader(); }, 0);
   });
   document.addEventListener('click', event => {
     const link = event.target.closest('a[href]');

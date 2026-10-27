@@ -27,8 +27,8 @@
 <script>
 document.querySelectorAll('[data-outlet-card]').forEach(card=>{const key='aapoorti-outlet-card-{{ user.id }}-'+card.dataset.outletCard;card.open=sessionStorage.getItem(key)==='open';card.addEventListener('toggle',()=>sessionStorage.setItem(key,card.open?'open':'closed'))});
 const opTabs=document.querySelectorAll('[data-op-tab]');function openOp(name){if(!['queue','packing','dockets'].includes(name))name='queue';sessionStorage.setItem('aapoorti-pos-tab-{{ user.id }}',name);opTabs.forEach(b=>b.classList.toggle('active',b.dataset.opTab===name));document.querySelectorAll('.op-panel').forEach(p=>p.classList.toggle('active',p.id===`op-${name}`))}opTabs.forEach(b=>b.onclick=()=>openOp(b.dataset.opTab));openOp(location.hash.slice(1)||sessionStorage.getItem('aapoorti-pos-tab-{{ user.id }}')||'queue');
-const billChecks=[...document.querySelectorAll('[data-docket-bill]')],builder=document.getElementById('docket-builder'),ids=document.getElementById('docket-bill-ids'),label=document.getElementById('selected-bills-label'),target=document.getElementById('docket-target');
-const packedDocketOptions=[...target.options].filter(option=>option.value).map(option=>option.cloneNode(true));
+let billChecks=[...document.querySelectorAll('[data-docket-bill]')],builder=document.getElementById('docket-builder'),ids=document.getElementById('docket-bill-ids'),label=document.getElementById('selected-bills-label'),target=document.getElementById('docket-target');
+let packedDocketOptions=[...target.options].filter(option=>option.value).map(option=>option.cloneNode(true));
 function updateDocketSelection(){
  const chosen=billChecks.filter(x=>x.checked),keys=new Set(chosen.map(x=>x.dataset.franchise+':'+x.dataset.mode));
  ids.value=chosen.map(x=>x.value).join(',');
@@ -64,8 +64,8 @@ function filterOutletFranchise(){
 }
 billChecks.forEach(box=>box.onchange=updateDocketSelection);target.onchange=updateDocketSelection;franchiseFilter.onchange=filterOutletFranchise;filterOutletFranchise();
 
-const helperFranchise=document.getElementById('helper-franchise'),helperMode=document.getElementById('helper-mode'),helperTarget=document.getElementById('helper-target'),helperRows=[...document.querySelectorAll('.helper-bill')];
-const helperDocketOptions=[...helperTarget.options].filter(option=>option.value).map(option=>{const copy=option.cloneNode(true);copy.hidden=false;copy.disabled=false;return copy;});
+let helperFranchise=document.getElementById('helper-franchise'),helperMode=document.getElementById('helper-mode'),helperTarget=document.getElementById('helper-target'),helperRows=[...document.querySelectorAll('.helper-bill')];
+let helperDocketOptions=[...helperTarget.options].filter(option=>option.value).map(option=>{const copy=option.cloneNode(true);copy.hidden=false;copy.disabled=false;return copy;});
 function updateHelperSelection(){
  const chosen=helperRows.filter(row=>!row.hidden&&row.querySelector('input').checked);
  document.getElementById('helper-bill-ids').value=chosen.map(row=>row.querySelector('input').value).join(',');
@@ -75,16 +75,16 @@ function updateHelperSelection(){
  document.getElementById('helper-submit').textContent=helperTarget.value?'Add to docket':'Create docket';
  document.getElementById('helper-select-all').textContent=chosen.length&&chosen.length===helperRows.filter(row=>!row.hidden).length?'Clear selection':'Select all';
 }
-function listBillsByFranchise(){
+function listBillsByFranchise(preserveSelection=false){
  const fid=helperFranchise.value,mode=helperMode.value;
- helperRows.forEach(row=>{row.hidden=!fid||row.dataset.helperFranchise!==fid||row.dataset.helperMode!==mode;row.querySelector('input').checked=false;});
+ helperRows.forEach(row=>{row.hidden=!fid||row.dataset.helperFranchise!==fid||row.dataset.helperMode!==mode;if(preserveSelection!==true)row.querySelector('input').checked=false;});
  const count=helperRows.filter(row=>!row.hidden).length;
  document.getElementById('helper-empty').hidden=count>0;
  document.getElementById('helper-empty').textContent=fid?'No unassigned packed bills for this franchise and fulfilment mode. Pack bills first.':'Choose a franchise to see its packed bills.';
  document.getElementById('helper-select-all').disabled=!count;
- helperTarget.replaceChildren(new Option('Create a new docket',''));
+ const priorTarget=helperTarget.value;helperTarget.replaceChildren(new Option('Create a new docket',''));
  helperDocketOptions.filter(option=>option.dataset.franchise===fid&&option.dataset.mode===mode).forEach(option=>helperTarget.appendChild(option.cloneNode(true)));
- helperTarget.value='';updateHelperSelection();
+ helperTarget.value=preserveSelection===true&&[...helperTarget.options].some(o=>o.value===priorTarget)?priorTarget:'';updateHelperSelection();
 }
 helperFranchise.onchange=listBillsByFranchise;helperMode.onchange=listBillsByFranchise;helperTarget.onchange=updateHelperSelection;
 helperRows.forEach(row=>row.querySelector('input').onchange=updateHelperSelection);
@@ -92,5 +92,12 @@ document.getElementById('helper-select-all').onclick=()=>{const visible=helperRo
 document.getElementById('franchise-docket-helper').onsubmit=()=>{const selected=document.getElementById('helper-bill-ids').value;if(!selected)return false;document.getElementById('helper-submit').disabled=true;return true;};
 listBillsByFranchise();
 franchiseFilter.addEventListener('change',()=>{helperFranchise.value=franchiseFilter.value==='all'?'':franchiseFilter.value;listBillsByFranchise();});
+document.addEventListener('app:updated',event=>{
+ billChecks=[...document.querySelectorAll('[data-docket-bill]')];helperRows=[...document.querySelectorAll('.helper-bill')];
+ packedDocketOptions=[...event.detail.document.querySelectorAll('#docket-target option')].filter(o=>o.value).map(o=>o.cloneNode(true));
+ helperDocketOptions=[...event.detail.document.querySelectorAll('#helper-target option')].filter(o=>o.value).map(o=>{const copy=o.cloneNode(true);copy.hidden=false;copy.disabled=false;return copy;});
+ billChecks.forEach(box=>box.onchange=updateDocketSelection);helperRows.forEach(row=>row.querySelector('input').onchange=updateHelperSelection);
+ filterOutletFranchise();listBillsByFranchise(true);
+});
 </script>
 {% endblock %}

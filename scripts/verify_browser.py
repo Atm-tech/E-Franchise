@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sqlite3
 import tempfile
 import time
 from urllib.request import urlopen
@@ -10,7 +11,7 @@ from urllib.request import urlopen
 from playwright.sync_api import sync_playwright
 
 root = Path(__file__).resolve().parents[1]
-with tempfile.TemporaryDirectory(prefix='aapoorti-browser-') as directory:
+with tempfile.TemporaryDirectory(prefix='aapoorti-browser-', ignore_cleanup_errors=True) as directory:
     log_path = Path(directory)/'server.log'
     with log_path.open('w') as log:
         env = dict(os.environ, APP_ENV='test', SEED_DEMO='1', E_FRANCHISE_DATA_DIR=directory, E_FRANCHISE_DB=str(Path(directory)/'test.db'))
@@ -23,6 +24,9 @@ with tempfile.TemporaryDirectory(prefix='aapoorti-browser-') as directory:
                         if response.status == 200: break
                 except Exception: time.sleep(.2)
             with sync_playwright() as p:
+                with sqlite3.connect(Path(directory)/'test.db') as stock:
+                    stock.execute("INSERT INTO inventory_balances(outlet_id,product_id,on_hand,reserved,updated_at) SELECT o.id,p.id,100,0,'test' FROM outlets o CROSS JOIN products p WHERE 1 ON CONFLICT(outlet_id,product_id) DO UPDATE SET on_hand=100,reserved=0")
+                stock.close()
                 browser=p.chromium.launch(headless=True)
                 context=browser.new_context(viewport={'width':390,'height':844})
                 page=context.new_page()
@@ -61,16 +65,18 @@ with tempfile.TemporaryDirectory(prefix='aapoorti-browser-') as directory:
                 product=context.request.get(base+'/api/mobile/catalogue',headers=headers).json()['products'][0]
                 body={'cart_json':json.dumps([{'id':product['id'],'qty':1}]),'customer_name':'Browser live check','customer_phone':'9999999999','fulfillment_mode':'FRANCHISE_PICKUP','status_mode':'ON_HOLD','request_key':'browser-live-check'}
                 page.evaluate("showView('orders-view')")
-                with page.expect_navigation(wait_until='domcontentloaded',timeout=15000):
-                    result=context.request.post(base+'/api/mobile/franchise/orders',headers=headers,form=body)
-                    assert result.ok, result.text()
+                page.evaluate("window.livePageSentinel='kept'")
+                result=context.request.post(base+'/api/mobile/franchise/orders',headers=headers,form=body)
+                assert result.ok, result.text()
+                page.wait_for_function("document.getElementById('filtered-orders').textContent.includes('Browser live check')",timeout=15000)
                 page.wait_for_function("document.querySelector('#orders-view').classList.contains('active')")
-                assert page.locator('#orders-view').inner_text().find('Browser live check')>=0
+                assert 'Browser live check' in page.locator('#filtered-orders').text_content()
                 page.locator('#customer-name').fill('Unsaved buyer',force=True)
                 body['request_key']='browser-live-draft'
                 context.request.post(base+'/api/mobile/franchise/orders',headers=headers,form=body)
-                page.locator('#event-notice').wait_for(timeout=15000)
+                page.wait_for_function("document.querySelectorAll('#filtered-orders .order-row-detailed').length>=2",timeout=15000)
                 assert page.locator('#customer-name').input_value()=='Unsaved buyer'
+                assert page.evaluate('window.livePageSentinel')=='kept'
                 page.screenshot(path=str(shots/'live-draft-preserved.png'),full_page=True)
                 assert not errors, errors
                 browser.close()

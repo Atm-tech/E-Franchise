@@ -708,4 +708,6 @@ def init_db() -> None:
             upsert_setting(cur, "bootstrap_admin_reset_token", reset_token)
         for f in cur.execute("SELECT id FROM franchisees").fetchall():
             cur.execute("INSERT OR IGNORE INTO earnings_wallets(franchisee_id,balance,updated_at) VALUES(?,0,?)", (f["id"], now_str()))
+        from app.realtime import install_change_tracking
+        install_change_tracking(conn)
         conn.commit()
