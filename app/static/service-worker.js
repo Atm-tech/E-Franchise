@@ -1,5 +1,5 @@
-const CACHE = 'aapoorti-shell-v15';
-const SHELL = ['/static/offline.html', '/static/style.css?v=49', '/static/app-shell.js?v=14', '/static/vendor/morphdom-2.7.8.js', '/static/ui-sync.js?v=1', '/static/live-events.js?v=3', '/static/aapoorti-logo.svg', '/static/app-icon.svg', '/static/manifest.webmanifest'];
+const CACHE = 'aapoorti-shell-v16';
+const SHELL = ['/static/offline.html', '/static/style.css?v=50', '/static/app-shell.js?v=14', '/static/vendor/morphdom-2.7.8.js', '/static/ui-sync.js?v=1', '/static/live-events.js?v=3', '/static/aapoorti-logo.svg', '/static/app-icon.svg', '/static/manifest.webmanifest'];
 self.addEventListener('install', event => event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(SHELL)).then(() => self.skipWaiting())));
 self.addEventListener('activate', event => event.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(key => key !== CACHE).map(key => caches.delete(key)))).then(() => self.clients.claim())));
 self.addEventListener('fetch', event => {

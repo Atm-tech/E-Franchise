@@ -50,6 +50,38 @@ with tempfile.TemporaryDirectory(prefix='aapoorti-realtime-', ignore_cleanup_err
                     pages[role] = page
                 print('PASS: all five role pages initialize and patch without script errors', flush=True)
                 admin, franchise = pages['adm'], pages['frn']
+                admin.evaluate("openAdminTab('franchisees')")
+                admin.context.set_geolocation({'latitude':23.219123,'longitude':77.400456,'accuracy':12})
+                admin.context.grant_permissions(['geolocation'], origin=base)
+                onboard=admin.locator('form[action="/admin/franchisees"]')
+                for name,value in {'name':'GPS test owner','mobile':'GPS-TEST-LOGIN','shop_name':'GPS test shop','address':'Test shop address','initial_password':'LocalTestPassword123'}.items():
+                    onboard.locator(f'[name={name}]').fill(value)
+                onboard.locator('[data-fill-onboarding-location]').click()
+                admin.wait_for_function("document.querySelector('form[action=\"/admin/franchisees\"] [name=latitude]').value==='23.219123'")
+                assert onboard.locator('[name=longitude]').input_value()=='77.400456'
+                assert onboard.locator('[name=name]').input_value()=='GPS test owner'
+                onboard.locator('button[type=submit],button:not([type])').last.click()
+                admin.wait_for_function("document.querySelector('main').textContent.includes('GPS test shop')",timeout=15000)
+                saved=write("SELECT latitude,longitude FROM franchisees WHERE mobile='GPS-TEST-LOGIN'")[0]
+                assert saved==(23.219123,77.400456),saved
+                assert admin.evaluate('window.pageSentinel')=='kept'
+                token=admin.locator('meta[name=csrf-token]').get_attribute('content')
+                payload={'name':'Invalid GPS','mobile':'BAD-GPS-TEST','shop_name':'Invalid GPS shop','initial_password':'LocalTestPassword123','request_key':'invalid-gps-test-request'}
+                for coordinates in [{'latitude':'91','longitude':'77'}, {'latitude':'23'}, {'latitude':'NaN','longitude':'77'}]:
+                    result=admin.context.request.post(base+'/admin/franchisees',form=payload|coordinates,headers={'X-CSRF-Token':token})
+                    assert result.status==400,result.text()
+                assert not write("SELECT id FROM franchisees WHERE mobile='BAD-GPS-TEST'")
+                result=admin.context.request.post(base+'/admin/franchisees',form=payload|{'mobile':'NO-GPS-TEST','request_key':'no-gps-test-request','latitude':'','longitude':''},headers={'X-CSRF-Token':token})
+                assert result.ok,result.text()
+                assert write("SELECT latitude,longitude FROM franchisees WHERE mobile='NO-GPS-TEST'")[0]==(None,None)
+                admin.evaluate("() => { navigator.geolocation.getCurrentPosition=(_,fail)=>fail({code:1}); }")
+                onboard.locator('[data-fill-onboarding-location]').click()
+                assert 'permission denied' in onboard.locator('[data-onboarding-location-status]').inner_text()
+                assert onboard.locator('[name=latitude]').is_editable()
+                admin.set_viewport_size({'width':390,'height':844})
+                assert not admin.evaluate('document.documentElement.scrollWidth>innerWidth')
+                admin.set_viewport_size({'width':1280,'height':900})
+                print('PASS: onboarding captures mocked GPS, saves coordinates without reload, rejects invalid pairs and supports denied-permission manual fallback on mobile',flush=True)
                 admin.evaluate("openAdminTab('catalog')")
                 form = admin.locator('form[action="/admin/products"]')
                 form.locator('[name=sku_code]').fill('DRAFT-KEPT')

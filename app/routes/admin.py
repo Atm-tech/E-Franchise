@@ -129,11 +129,23 @@ def create_franchisee(
     ifsc_code: str = Form(""),
     bank_name: str = Form(""),
     gst_number: str = Form(""),
+    latitude: str = Form(""),
+    longitude: str = Form(""),
     request_key: str = Form(...),
 ) -> RedirectResponse:
     user = require_role(request, "ADMIN")
     if isinstance(user, RedirectResponse):
         return user
+    try:
+        latitude_value = float(latitude.strip()) if latitude.strip() else None
+        longitude_value = float(longitude.strip()) if longitude.strip() else None
+    except ValueError:
+        raise HTTPException(400, "Enter numeric latitude and longitude, or leave both empty")
+    if (latitude_value is None) != (longitude_value is None):
+        raise HTTPException(400, "Enter both latitude and longitude, or leave both empty")
+    if latitude_value is not None and (not math.isfinite(latitude_value) or not math.isfinite(longitude_value)
+                                       or not -90 <= latitude_value <= 90 or not -180 <= longitude_value <= 180):
+        raise HTTPException(400, "Enter a valid location: latitude -90 to 90 and longitude -180 to 180")
     with get_conn() as conn:
         cur = conn.cursor()
         if not operations.claim_mutation(cur, user, "create_franchisee", request_key):
@@ -148,11 +160,11 @@ def create_franchisee(
         cur.execute(
             """
             INSERT INTO franchisees
-            (name, mobile, shop_name, address, area, wallet_balance, status, outlet_id, delivery_address, bank_account_number, ifsc_code, bank_name, gst_number, created_at)
-            VALUES (?, ?, ?, ?, ?, 0, 'ACTIVE', ?, ?, ?, ?, ?, ?, ?)
+            (name, mobile, shop_name, address, area, wallet_balance, status, outlet_id, delivery_address, bank_account_number, ifsc_code, bank_name, gst_number, latitude, longitude, created_at)
+            VALUES (?, ?, ?, ?, ?, 0, 'ACTIVE', ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (name.strip(), mobile.strip(), shop_name.strip(), address.strip(), area.strip(), outlet_id,
-             (delivery_address.strip() or address.strip()), bank_account_number.strip(), ifsc_code.strip().upper(), bank_name.strip(), gst_number.strip().upper(), now_str()),
+             (delivery_address.strip() or address.strip()), bank_account_number.strip(), ifsc_code.strip().upper(), bank_name.strip(), gst_number.strip().upper(), latitude_value, longitude_value, now_str()),
         )
         fid = cur.lastrowid
         if advance_amount > 0:
