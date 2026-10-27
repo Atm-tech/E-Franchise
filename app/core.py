@@ -230,7 +230,7 @@ def add_order_event(cur: sqlite3.Cursor, order_id: int, status: str, notes: str,
     )
 
 
-def resolve_commission(cur: sqlite3.Cursor, product: sqlite3.Row, line_total: float) -> float:
+def resolve_commission_rule(cur: sqlite3.Cursor, product: sqlite3.Row):
     rule = cur.execute(
         "SELECT * FROM commission_rules WHERE status='ACTIVE' AND product_id=? AND (starts_on IS NULL OR starts_on='' OR starts_on<=?) AND (ends_on IS NULL OR ends_on='' OR ends_on>=?) ORDER BY id DESC LIMIT 1",
         (product["id"], now_str()[:10], now_str()[:10]),
@@ -240,6 +240,11 @@ def resolve_commission(cur: sqlite3.Cursor, product: sqlite3.Row, line_total: fl
             "SELECT * FROM commission_rules WHERE status='ACTIVE' AND scope='DEPARTMENT' AND lower(department)=lower(?) AND (starts_on IS NULL OR starts_on='' OR starts_on<=?) AND (ends_on IS NULL OR ends_on='' OR ends_on>=?) ORDER BY id DESC LIMIT 1",
             (product["department"], now_str()[:10], now_str()[:10]),
         ).fetchone()
+    return rule
+
+
+def resolve_commission(cur: sqlite3.Cursor, product: sqlite3.Row, line_total: float) -> float:
+    rule = resolve_commission_rule(cur, product)
     if rule:
         value = float(rule["commission_value"])
         return min(line_total, value if rule["commission_type"] == "FIXED" else line_total * value / 100.0)

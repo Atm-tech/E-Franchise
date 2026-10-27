@@ -35,6 +35,16 @@ def admin_dashboard(request: Request, message: str | None = None, error: str | N
                WHERE f.status!='CANCELLED' ORDER BY f.id DESC"""
         ).fetchall()
         products = conn.execute("SELECT * FROM products WHERE status='ACTIVE' ORDER BY product_name, sku_code").fetchall()
+        catalogue = []
+        for product in products:
+            rule = resolve_commission_rule(conn.cursor(), product)
+            catalogue.append(dict(product) | {
+                'effective_commission_type': rule['commission_type'] if rule else 'PERCENT',
+                'effective_commission_value': float(rule['commission_value'] if rule else product['commission_value']),
+                'effective_commission_amount': min(float(product['rsp']), float(rule['commission_value'])) if rule and rule['commission_type'] == 'FIXED' else 0,
+                'commission_source': ('Product rule' if rule['product_id'] is not None else 'Department rule') if rule else 'No matching rule · fallback',
+            })
+        products = catalogue
         inventory = conn.execute("SELECT ib.*,p.sku_code,p.product_name,o.code outlet_code FROM inventory_balances ib JOIN products p ON p.id=ib.product_id JOIN outlets o ON o.id=ib.outlet_id ORDER BY p.product_name,o.code LIMIT 150").fetchall()
         inventory_movements = conn.execute("SELECT im.*,p.sku_code,p.product_name,o.code outlet_code FROM inventory_movements im JOIN products p ON p.id=im.product_id JOIN outlets o ON o.id=im.outlet_id ORDER BY im.id DESC LIMIT 50").fetchall()
         orders = conn.execute(
