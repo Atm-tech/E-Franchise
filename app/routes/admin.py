@@ -505,6 +505,10 @@ def cancel_franchise_membership(franchisee_id: int, request: Request, request_ke
             return RedirectResponse('/admin/dashboard?message=Membership+already+cancelled#franchisees', status_code=303)
         if cur.execute("SELECT 1 FROM orders WHERE franchisee_id=? AND status NOT IN ('DELIVERED','CANCELLED','PICKED_BY_FRANCHISEE') LIMIT 1", (franchisee_id,)).fetchone():
             raise HTTPException(409, 'Close all active and on-hold orders before cancelling membership')
+        if cur.execute("""SELECT 1 FROM orders o WHERE o.franchisee_id=?
+            AND o.status IN ('DELIVERED','PICKED_BY_FRANCHISEE') AND NOT EXISTS(
+                SELECT 1 FROM order_events e WHERE e.order_id=o.id AND e.status='CUSTOMER_DELIVERED') LIMIT 1""", (franchisee_id,)).fetchone():
+            raise HTTPException(409, 'Complete outstanding customer handovers before cancelling membership')
         if cur.execute("SELECT 1 FROM delivery_tasks WHERE franchisee_id=? AND status NOT IN ('DELIVERED','CANCELLED') LIMIT 1", (franchisee_id,)).fetchone():
             raise HTTPException(409, 'Close outstanding delivery tasks before cancelling membership')
         earnings = cur.execute('SELECT balance FROM earnings_wallets WHERE franchisee_id=?', (franchisee_id,)).fetchone()

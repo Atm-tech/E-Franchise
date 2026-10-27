@@ -227,6 +227,12 @@ with tempfile.TemporaryDirectory(prefix='aapoorti-realtime-', ignore_cleanup_err
                 held_id=write('SELECT id FROM orders WHERE franchisee_id=?',(gps_id,))[0][0]
                 closed=gps_context.request.post(base+f'/franchise/orders/{held_id}/cancel',form={'request_key':'membership-close-hold'},headers={'X-CSRF-Token':gps_csrf})
                 assert closed.ok
+                write("UPDATE orders SET status='PICKED_BY_FRANCHISEE',commission_total=0 WHERE id=?",(held_id,))
+                admin.once('dialog',lambda dialog:dialog.accept())
+                with admin.expect_response(lambda response:response.url.endswith(path) and response.request.method=='POST') as attempt:
+                    button.click()
+                assert attempt.value.status==409
+                write("INSERT INTO order_events(order_id,status,notes,created_at) VALUES(?,'CUSTOMER_DELIVERED','Historical handover test','2026-10-27 12:00:00')",(held_id,))
                 admin.once('dialog',lambda dialog:dialog.accept());button.click()
                 member.wait_for(state='detached',timeout=15000)
                 assert admin.evaluate('window.pageSentinel')=='kept'
