@@ -34,7 +34,7 @@ def admin_dashboard(request: Request, message: str | None = None, error: str | N
                FROM franchisees f LEFT JOIN earnings_wallets ew ON ew.franchisee_id=f.id
                ORDER BY f.id DESC LIMIT 8"""
         ).fetchall()
-        products = conn.execute("SELECT * FROM products WHERE status='ACTIVE' ORDER BY id DESC LIMIT 8").fetchall()
+        products = conn.execute("SELECT * FROM products WHERE status='ACTIVE' ORDER BY product_name, sku_code").fetchall()
         inventory = conn.execute("SELECT ib.*,p.sku_code,p.product_name,o.code outlet_code FROM inventory_balances ib JOIN products p ON p.id=ib.product_id JOIN outlets o ON o.id=ib.outlet_id ORDER BY p.product_name,o.code LIMIT 150").fetchall()
         inventory_movements = conn.execute("SELECT im.*,p.sku_code,p.product_name,o.code outlet_code FROM inventory_movements im JOIN products p ON p.id=im.product_id JOIN outlets o ON o.id=im.outlet_id ORDER BY im.id DESC LIMIT 50").fetchall()
         orders = conn.execute(
